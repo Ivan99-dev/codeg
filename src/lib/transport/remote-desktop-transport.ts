@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import { WS_READY_CHANNEL } from "./constants"
 import type { AttachTransportHost } from "./web-event-stream"
 import { WebEventStream } from "./web-event-stream"
+import { randomUUID } from "@/lib/utils"
 import type {
   CallOptions,
   EventStream,
@@ -103,7 +104,7 @@ export class RemoteDesktopTransport implements Transport {
   /// and `remote_ws_unsubscribe`. Because it is known before the invoke
   /// returns, destroy() can always issue a clean unsubscribe regardless of
   /// whether the subscribe invoke is still in-flight.
-  private readonly subscriptionId = crypto.randomUUID()
+  private readonly subscriptionId = randomUUID()
   /// Null = not yet requested; true = subscribe invoke in-flight or done.
   private wsStarted = false
   /// Latched in `destroy()` so any in-flight `subscribe()` awaiters

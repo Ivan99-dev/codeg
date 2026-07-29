@@ -1,12 +1,15 @@
 use std::sync::Arc;
 
 use axum::{
+    Json, Router,
     extract::{DefaultBodyLimit, Extension},
-    http::{StatusCode, Uri},
+    http::{
+        StatusCode, Uri,
+        header::{CACHE_CONTROL, HeaderValue},
+    },
     middleware::{self, Next},
     response::IntoResponse,
     routing::{any, get, post},
-    Json, Router,
 };
 
 use crate::web::handlers::files::UPLOAD_MAX_BYTES;
@@ -1371,14 +1374,44 @@ pub fn build_router(
         }
     });
 
+    let static_cache_control = middleware::from_fn(|req: axum::extract::Request, next: Next| {
+        let path = req.uri().path().to_string();
+        async move {
+            let mut response = next.run(req).await;
+            if let Some(value) = cache_control_for_static_path(&path) {
+                response.headers_mut().insert(CACHE_CONTROL, value);
+            }
+            response
+        }
+    });
+
     Router::new()
         .nest("/api", api)
         .merge(ws_route)
         .fallback_service(fallback)
         .layer(html_rewrite)
+        .layer(static_cache_control)
         .layer(cors)
         .layer(Extension(state))
         .layer(Extension(shutdown_signal))
+}
+
+fn cache_control_for_static_path(path: &str) -> Option<HeaderValue> {
+    if path.starts_with("/api") || path.starts_with("/ws") {
+        return None;
+    }
+
+    if path.starts_with("/_next/static/") {
+        return Some(HeaderValue::from_static(
+            "public, max-age=31536000, immutable",
+        ));
+    }
+
+    if path == "/" || path.ends_with(".html") || !path.contains('.') {
+        return Some(HeaderValue::from_static("no-cache"));
+    }
+
+    Some(HeaderValue::from_static("public, max-age=3600"))
 }
 
 async fn health_check() -> impl IntoResponse {
@@ -1390,6 +1423,36 @@ async fn health_check() -> impl IntoResponse {
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cache_control_for_static_path;
+
+    fn header(path: &str) -> Option<String> {
+        cache_control_for_static_path(path).map(|v| v.to_str().unwrap().to_string())
+    }
+
+    #[test]
+    fn html_entrypoints_are_not_cached() {
+        assert_eq!(header("/"), Some("no-cache".to_string()));
+        assert_eq!(header("/workspace"), Some("no-cache".to_string()));
+        assert_eq!(header("/workspace.html"), Some("no-cache".to_string()));
+    }
+
+    #[test]
+    fn next_static_assets_are_immutable() {
+        assert_eq!(
+            header("/_next/static/chunks/app.js"),
+            Some("public, max-age=31536000, immutable".to_string())
+        );
+    }
+
+    #[test]
+    fn api_and_ws_paths_are_left_to_their_handlers() {
+        assert_eq!(header("/api/health"), None);
+        assert_eq!(header("/ws/events"), None);
+    }
 }
 
 async fn api_not_found(uri: axum::http::Uri) -> impl IntoResponse {
