@@ -1425,6 +1425,18 @@ async fn health_check() -> impl IntoResponse {
     }))
 }
 
+async fn api_not_found(uri: axum::http::Uri) -> impl IntoResponse {
+    let command = uri.path().trim_start_matches('/');
+    tracing::info!("[WEB] Unimplemented API endpoint: {}", command);
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(serde_json::json!({
+            "code": "not_implemented",
+            "message": format!("API endpoint '{}' is not available in web mode", command),
+        })),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::cache_control_for_static_path;
@@ -1453,16 +1465,4 @@ mod tests {
         assert_eq!(header("/api/health"), None);
         assert_eq!(header("/ws/events"), None);
     }
-}
-
-async fn api_not_found(uri: axum::http::Uri) -> impl IntoResponse {
-    let command = uri.path().trim_start_matches('/');
-    tracing::info!("[WEB] Unimplemented API endpoint: {}", command);
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(serde_json::json!({
-            "code": "not_implemented",
-            "message": format!("API endpoint '{}' is not available in web mode", command),
-        })),
-    )
 }
