@@ -1653,6 +1653,7 @@ mod tests {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
     }
 
@@ -2303,6 +2304,7 @@ mod tests {
             message: "boom".into(),
             agent_type: "claude_code".into(),
             code: None,
+            details: None,
             terminal: true,
         }));
 
@@ -2365,6 +2367,7 @@ mod tests {
             message: "transport closed".into(),
             agent_type: "claude_code".into(),
             code: None,
+            details: None,
             terminal: true,
         }));
 
@@ -2373,6 +2376,7 @@ mod tests {
             message: "turn refusal".into(),
             agent_type: "claude_code".into(),
             code: Some("turn_failed_refusal".into()),
+            details: None,
             terminal: false,
         }));
 
@@ -2766,6 +2770,7 @@ mod tests {
                 message: "Gemini refused the prompt.".into(),
                 agent_type: "gemini".into(),
                 code: Some("turn_failed_refusal".into()),
+                details: None,
                 // turn-failure Error: non-terminal. Worker MUST no-op (the
                 // upcoming TurnComplete maps the outcome via complete_call).
                 terminal: false,
@@ -2824,6 +2829,7 @@ mod tests {
                 message: "transport closed".into(),
                 agent_type: "claude_code".into(),
                 code: None,
+                details: None,
                 terminal: true,
             },
         }));
@@ -2879,6 +2885,7 @@ mod tests {
                 message: "Authentication required".into(),
                 agent_type: "gemini".into(),
                 code: Some("auth_required".into()),
+                details: None,
                 // Genuinely terminal: matches `connection.rs:493`, the only
                 // emit site where the run_connection task is unwinding.
                 terminal: true,
@@ -2984,6 +2991,7 @@ mod tests {
                 message: "Failed to load session, starting new: stale id".into(),
                 agent_type: "gemini".into(),
                 code: None,
+                details: None,
                 terminal: false,
             },
         }));
@@ -3067,6 +3075,7 @@ mod tests {
                 message: "Failed to set mode: bad id".into(),
                 agent_type: "claude_code".into(),
                 code: None,
+                details: None,
                 terminal: false,
             },
         }));

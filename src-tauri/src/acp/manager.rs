@@ -11,7 +11,7 @@ use sea_orm::{
 };
 
 use crate::acp::connection::{
-    spawn_agent_connection, AgentConnection, ConnectionCommand, GoalControlAction,
+    spawn_agent_connection, AgentConnection, ConnectionCommand, GoalControlAction, SteerOutcome,
 };
 use crate::acp::error::AcpError;
 use crate::acp::feedback::{
@@ -41,6 +41,14 @@ use crate::web::event_bridge::{emit_with_state, emit_with_state_gated, EventEmit
 /// event payload so a large paste can't bloat the ring buffer, the per-channel
 /// IM message, or the webhook body.
 const USER_PROMPT_PREVIEW_MAX_CHARS: usize = 500;
+
+/// Grace window `disconnect_all` waits after firing every `Disconnect` before
+/// hard-killing surviving agent process trees. Long enough for a driver thread
+/// to unwind and run its own post-loop cleanup (delegation/question/plan-approval
+/// reclaim), short enough not to stall a quit noticeably. It is NOT there to
+/// make the agent's death gentler — the graceful path ends in the same
+/// `kill_tree`.
+const DISCONNECT_ALL_GRACE: Duration = Duration::from_millis(500);
 
 /// True for ids in the parsers' turn-id namespace (`turn-<digits>`), which every
 /// parser assigns via `format!("turn-{}", n)`. A broadcast `message_id` must
@@ -339,6 +347,7 @@ impl ConnectionManager {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         let mut map = self.connections.lock().await;
         map.insert(id.to_string(), conn);
@@ -381,6 +390,7 @@ impl ConnectionManager {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         self.connections.lock().await.insert(id.to_string(), conn);
         rx
@@ -1622,6 +1632,7 @@ impl ConnectionManager {
                         updated_at: Set(now),
                         deleted_at: Set(None),
                         pinned_at: Set(None),
+                        origin_cwd: Set(None),
                     };
                     let inserted = sibling.insert(txn).await?;
                     Ok(inserted.id)
@@ -1845,16 +1856,104 @@ impl ConnectionManager {
         disconnected
     }
 
+    /// Disconnect every connection, then hard-kill any surviving agent process
+    /// trees as a shutdown backstop.
+    ///
+    /// The graceful path (send `Disconnect` → the connection driver thread
+    /// breaks its command loop → `run_connection` unwinds → the vendored
+    /// `sacp-tokio` `ChildGuard::drop` runs `kill_tree`) is enough on its own
+    /// *when it gets to run*. It doesn't at process exit: `run_connection` is
+    /// driven on a dedicated `std::thread` (see `spawn_agent`), and when Tauri's
+    /// `ExitRequested` handler returns the process terminates those threads
+    /// mid-flight — often before the driver reaches `ChildGuard::drop` — so the
+    /// agent CLI (and its own children, e.g. MCP servers / a forked `node`) is
+    /// reparented and lingers until it independently notices its stdin EOF
+    /// (~30s for Claude Code / node).
+    ///
+    /// So: fire every `Disconnect`, give the graceful path a short grace window,
+    /// then synchronously `kill_tree` whatever is still running.
+    ///
+    /// What the window actually buys is NOT a gentler death for the agent — the
+    /// graceful path ends in the same `kill_tree` — it is time for the driver
+    /// thread's own post-loop cleanup (delegation-token revoke, `cancel_by_parent`
+    /// for delegations / questions / plan approvals), which at quit previously
+    /// got no time at all.
+    ///
+    /// Each pid is read from its live cell as late as possible — after the
+    /// window, inside the kill loop — never from an up-front snapshot. That is
+    /// load-bearing in both directions:
+    /// - A connection whose process was reaped during the window has already
+    ///   had its cell zeroed by the `on_exit` callback, so the backstop skips it
+    ///   instead of `kill_tree`-ing a pid the OS may have recycled onto an
+    ///   unrelated process tree. A connection that merely *ended* keeps its pid
+    ///   and still gets swept — `ChildGuard::drop` signals without waiting, so
+    ///   "the driver returned" is not "the agent is gone".
+    /// - A connection whose child spawned *after* quit began (still `Connecting`
+    ///   when the map was drained) publishes its pid into the same cell, so the
+    ///   backstop still reaches it — an up-front snapshot would read `0` and
+    ///   leak exactly the orphan this exists to kill.
+    ///
+    /// Only pids this manager spawned (and their descendants) are touched;
+    /// `child_pid == 0` (never spawned, already finished, or a test/viewer entry
+    /// that owns no process) is skipped.
     pub async fn disconnect_all(&self) -> usize {
-        let cmd_txs: Vec<_> = {
+        let handles: Vec<(
+            tokio::sync::mpsc::Sender<ConnectionCommand>,
+            Arc<std::sync::atomic::AtomicU32>,
+        )> = {
             let mut connections = self.connections.lock().await;
-            connections.drain().map(|(_, conn)| conn.cmd_tx).collect()
+            connections
+                .drain()
+                .map(|(_, conn)| (conn.cmd_tx, conn.child_pid))
+                .collect()
         };
-        let disconnected = cmd_txs.len();
-        for cmd_tx in cmd_txs {
-            let _ = cmd_tx.send(ConnectionCommand::Disconnect).await;
+        let disconnected = handles.len();
+        // `try_send`, not `send().await`: this is the shutdown path, and the
+        // backstop below is only reachable if every send returns. A connection
+        // whose command queue is full (32 deep) would otherwise park the whole
+        // quit here — precisely the wedged connection whose tree most needs
+        // killing. A dropped `Disconnect` just means that connection skips the
+        // graceful path and gets hard-killed instead.
+        for (cmd_tx, _) in &handles {
+            let _ = cmd_tx.try_send(ConnectionCommand::Disconnect);
         }
         tracing::info!("[ACP] disconnect_all count={}", disconnected);
+
+        if disconnected == 0 {
+            return 0;
+        }
+
+        // Grace window: let the drivers unwind and run their own cleanup.
+        tokio::time::sleep(DISCONNECT_ALL_GRACE).await;
+
+        // Backstop: hard-kill whatever is still running. Runs on a blocking
+        // thread so the synchronous `kill_tree` doesn't stall the async runtime
+        // while a `block_on(disconnect_all())` shutdown caller waits on it.
+        let pid_cells: Vec<Arc<std::sync::atomic::AtomicU32>> =
+            handles.into_iter().map(|(_, pid)| pid).collect();
+        let _ = tokio::task::spawn_blocking(move || {
+            for cell in pid_cells {
+                // Load here, not before the window — see the doc comment.
+                let pid = cell.load(std::sync::atomic::Ordering::SeqCst);
+                if pid == 0 {
+                    continue;
+                }
+                match kill_tree::blocking::kill_tree(pid) {
+                    Ok(_) => {
+                        tracing::info!(
+                            "[ACP] disconnect_all backstop killed process tree pid={pid}"
+                        );
+                    }
+                    Err(e) => {
+                        // The process can still exit between the load and the
+                        // kill; that error is expected, not a failure.
+                        tracing::debug!("[ACP] disconnect_all backstop kill_tree pid={pid}: {e}");
+                    }
+                }
+            }
+        })
+        .await;
+
         disconnected
     }
 
@@ -1971,17 +2070,37 @@ impl ConnectionManager {
             )));
         }
         let text = trimmed.to_string();
-        let (state, emitter) = self
-            .get_state_and_emitter(conn_id)
-            .await
-            .ok_or_else(|| AcpError::ConnectionNotFound(conn_id.to_string()))?;
-        // Per-connection capability gate: reject if THIS agent never got the
-        // `check_user_feedback` tool (e.g. its session started before the feature
-        // was enabled) — the note could never be read. `feedback_tool_available`
-        // is fixed at launch, so a plain read is race-free.
-        if !state.read().await.feedback_tool_available {
+        let (state, cmd_tx, emitter) = {
+            let connections = self.connections.lock().await;
+            let conn = connections
+                .get(conn_id)
+                .ok_or_else(|| AcpError::ConnectionNotFound(conn_id.to_string()))?;
+            (
+                conn.state.clone(),
+                conn.cmd_tx.clone(),
+                conn.emitter.clone(),
+            )
+        };
+        // Channel-aware eligibility: a note is deliverable natively (the
+        // `_session/steering` push, synthesized at initialize) or through the
+        // `check_user_feedback` pull tool. Reject only when NEITHER channel
+        // exists — e.g. a session launched before the feature was enabled (no
+        // tool) on an adapter without proven native steering.
+        // `native_steering_available` is re-read on every call so a
+        // `startedNewTurn` downgrade mid-session silently reroutes later
+        // notes to the pull path.
+        let (native, tool_available) = {
+            let s = state.read().await;
+            (s.native_steering_available, s.feedback_tool_available)
+        };
+        if !native && !tool_available {
             return Err(AcpError::FeedbackDisabled);
         }
+
+        if native {
+            return Self::submit_feedback_native(conn_id, state, cmd_tx, emitter, text).await;
+        }
+
         let item = FeedbackItem::new_pending(
             uuid::Uuid::new_v4().to_string(),
             text,
@@ -2002,6 +2121,113 @@ impl ConnectionManager {
             return Err(AcpError::NoActiveTurn);
         }
         Ok(item)
+    }
+
+    /// Native `_session/steering` delivery — the push half of
+    /// [`Self::submit_feedback`], cancellation-shielded.
+    ///
+    /// SHIELD (fork_session's pattern): once `ConnectionCommand::Steer` is
+    /// enqueued, the connection loop performs the injection REGARDLESS of
+    /// whether this caller survives. An HTTP caller disconnecting mid-await
+    /// must not leave "injected but unrecorded" state — no `FeedbackItem`, no
+    /// broadcast, absent from reconnect snapshots — so enqueue → outcome →
+    /// record → emit runs in a DETACHED task and the caller merely awaits the
+    /// JoinHandle to relay the result to a still-live client.
+    ///
+    /// Invariants (asserted by tests):
+    /// * NO DOUBLE DELIVERY. A natively-injected note is `Delivered` from
+    ///   birth, and `read_pending_feedback` only returns `Pending` — so even
+    ///   with the `check_user_feedback` tool still injected (it is, by
+    ///   design), a pull can never hand the agent the same text again.
+    /// * UNGATED EMIT. The pull path's `emit_with_state_gated(turn_in_flight)`
+    ///   is exactly wrong here: the adapter's `injected` reply is the
+    ///   authoritative fact the content reached the turn. Gating on a
+    ///   just-settled turn would misreport `NoActiveTurn`, and the caller
+    ///   would resubmit the same text as a prompt → duplicate. A delivered
+    ///   note recorded right after `TurnComplete` is harmless — the notes
+    ///   list renders only while prompting, and the next turn's `UserMessage`
+    ///   clears `feedback`.
+    async fn submit_feedback_native(
+        conn_id: &str,
+        state: Arc<tokio::sync::RwLock<crate::acp::session_state::SessionState>>,
+        cmd_tx: tokio::sync::mpsc::Sender<ConnectionCommand>,
+        emitter: EventEmitter,
+        text: String,
+    ) -> Result<FeedbackItem, AcpError> {
+        // Cheap pre-flight, NOT the authoritative check (that's the loop's
+        // idle arm replying `NoActiveTurn`): skip the round-trip when no turn
+        // is in flight at all.
+        if !state.read().await.turn_in_flight {
+            return Err(AcpError::NoActiveTurn);
+        }
+        let conn_id_for_task = conn_id.to_string();
+        let handle = tokio::spawn(async move {
+            let outcome: Result<FeedbackItem, AcpError> = async {
+                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                cmd_tx
+                    .send(ConnectionCommand::Steer {
+                        text: text.clone(),
+                        reply: reply_tx,
+                    })
+                    .await
+                    .map_err(|_| AcpError::ProcessExited)?;
+                let steer = reply_rx.await.map_err(|_| {
+                    AcpError::protocol("Steer reply channel closed".to_string())
+                })??;
+                match steer {
+                    // Honored opt-in: the content was NOT consumed and is
+                    // still host-owned. Surface the frontend's existing
+                    // turn-end fallback (resubmit as a normal prompt).
+                    SteerOutcome::PromptRequired => return Err(AcpError::NoActiveTurn),
+                    SteerOutcome::Injected => {}
+                    SteerOutcome::StartedNewTurn => {
+                        // The adapter ignored the opt-in and detached a turn
+                        // (stale binary lying about its version?). The content
+                        // IS consumed — record it delivered, NEVER resend —
+                        // but this adapter can't be trusted with the idle race
+                        // again: downgrade to the MCP pull channel for the
+                        // rest of the session.
+                        tracing::warn!(
+                            "[ACP][feedback] _session/steering returned startedNewTurn \
+                             (conn={conn_id_for_task}); downgrading native steering for \
+                             this session"
+                        );
+                        state.write().await.native_steering_available = false;
+                    }
+                }
+                let item = FeedbackItem::new_delivered(
+                    uuid::Uuid::new_v4().to_string(),
+                    text,
+                    chrono::Utc::now(),
+                );
+                // Ungated on purpose — see the invariant on this fn's doc.
+                emit_with_state(
+                    &state,
+                    &emitter,
+                    AcpEvent::FeedbackSubmitted { item: item.clone() },
+                )
+                .await;
+                Ok(item)
+            }
+            .await;
+            // Surface real failures even when the caller is gone (the
+            // detached task's Result would otherwise drop silently).
+            // `NoActiveTurn` is an expected reroute, not a failure.
+            if let Err(ref e) = outcome {
+                if !matches!(e, AcpError::NoActiveTurn) {
+                    tracing::error!(
+                        "[ACP][ERROR] native feedback submit failed (conn={conn_id_for_task}): {e}"
+                    );
+                }
+            }
+            outcome
+        });
+        match handle.await {
+            Ok(result) => result,
+            Err(join_err) => Err(AcpError::protocol(format!(
+                "steer task did not complete: {join_err}"
+            ))),
+        }
     }
 
     /// Read the pending feedback for a connection WITHOUT marking it delivered.
@@ -2831,7 +3057,165 @@ mod tests {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
+    }
+
+    /// Spawn a two-level process tree: `sh` (the stand-in for the agent CLI)
+    /// backgrounds a `sleep` grandchild (the stand-in for the agent's own
+    /// children — an MCP server, a forked `node`) and records its pid. The
+    /// grandchild is what the backstop assertions are about: it is the process
+    /// that gets reparented and lingers when only the direct child is killed.
+    ///
+    /// Returns the direct child — keep it alive, dropping a `Child` does NOT
+    /// kill it — and the grandchild pid.
+    #[cfg(unix)]
+    async fn spawn_process_tree(pidfile: &std::path::Path) -> (std::process::Child, i32) {
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("sleep 30 & echo $! > '{}'; wait", pidfile.display()))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn sh");
+        for _ in 0..150 {
+            if let Ok(raw) = std::fs::read_to_string(pidfile) {
+                if let Ok(pid) = raw.trim().parse::<i32>() {
+                    return (child, pid);
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // Bail-out path still reaps the tree, so a failing test can't leave a
+        // `sleep` behind for 30s.
+        let _ = kill_tree::blocking::kill_tree(child.id());
+        let _ = child.wait();
+        panic!("grandchild never recorded its pid");
+    }
+
+    /// True once `pid` is gone. `kill(pid, 0)` sends no signal, it only probes
+    /// existence; polling keeps the assertion from racing kernel teardown.
+    #[cfg(unix)]
+    async fn wait_until_dead(pid: i32) -> bool {
+        for _ in 0..150 {
+            // SAFETY: signal 0 only probes for existence; it sends no signal.
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
+    }
+
+    #[cfg(unix)]
+    fn is_alive(pid: i32) -> bool {
+        // SAFETY: signal 0 only probes for existence; it sends no signal.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    /// Quit has to kill the agent's whole process TREE. Killing just the direct
+    /// child leaves its children reparented and lingering — that orphan window
+    /// is the entire reason the backstop exists.
+    ///
+    /// The test connection's command receiver is dropped, so the graceful path
+    /// is unavailable and the kill can only come from the backstop.
+    /// Unix-only (relies on `sh` / `kill(2)`).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn disconnect_all_backstop_kills_the_whole_agent_process_tree() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut child, gpid) = spawn_process_tree(&dir.path().join("g.pid")).await;
+
+        let mgr = ConnectionManager::new();
+        let conn = fake_connection("conn-tree", None);
+        conn.child_pid
+            .store(child.id(), std::sync::atomic::Ordering::SeqCst);
+        mgr.connections
+            .lock()
+            .await
+            .insert("conn-tree".to_string(), conn);
+
+        assert_eq!(mgr.disconnect_all().await, 1);
+        assert!(
+            wait_until_dead(gpid).await,
+            "grandchild {gpid} survived — the quit backstop did not kill the tree"
+        );
+        let _ = child.wait();
+    }
+
+    /// A connection still `Connecting` when quit begins publishes its pid AFTER
+    /// the map is drained. Reading the pids up front would see `0` there and
+    /// skip it, leaking exactly the orphan this exists to kill — so the load
+    /// has to happen after the grace window, from the live cell.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn disconnect_all_backstop_reaches_a_child_that_spawns_during_the_grace_window() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut child, gpid) = spawn_process_tree(&dir.path().join("g.pid")).await;
+
+        let mgr = ConnectionManager::new();
+        let conn = fake_connection("conn-late", None);
+        // Still 0 at drain time, exactly like a connection whose agent process
+        // hasn't launched yet.
+        let cell = Arc::clone(&conn.child_pid);
+        mgr.connections
+            .lock()
+            .await
+            .insert("conn-late".to_string(), conn);
+
+        let pid = child.id();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cell.store(pid, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        assert_eq!(mgr.disconnect_all().await, 1);
+        assert!(
+            wait_until_dead(gpid).await,
+            "grandchild {gpid} survived — a pid published during the grace window was missed"
+        );
+        let _ = child.wait();
+    }
+
+    /// The mirror image: once the agent process has been reaped, the `on_exit`
+    /// callback zeroes the cell and the backstop must leave that pid alone.
+    /// Without the clear, a quit fires `kill_tree` at a pid whose process is
+    /// already dead and reaped — and if the OS recycled that number, the victim
+    /// is an unrelated process tree.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn disconnect_all_backstop_leaves_a_cleared_pid_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut child, gpid) = spawn_process_tree(&dir.path().join("g.pid")).await;
+
+        let mgr = ConnectionManager::new();
+        let conn = fake_connection("conn-cleared", None);
+        conn.child_pid
+            .store(child.id(), std::sync::atomic::Ordering::SeqCst);
+        let cell = Arc::clone(&conn.child_pid);
+        mgr.connections
+            .lock()
+            .await
+            .insert("conn-cleared".to_string(), conn);
+
+        // Stands in for the driver unwinding mid-window: the process is gone
+        // and the guard has zeroed the cell.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cell.store(0, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        assert_eq!(mgr.disconnect_all().await, 1);
+        // Settle: a wrongly-issued SIGTERM would have landed by now.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(
+            is_alive(gpid),
+            "backstop killed a tree whose pid the driver had already cleared"
+        );
+
+        let _ = kill_tree::blocking::kill_tree(child.id());
+        let _ = child.wait();
     }
 
     /// Build a broadcaster + subscribed receiver. Subscribing here (not lazily
@@ -3003,6 +3387,7 @@ mod tests {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         mgr.connections
             .lock()
@@ -3336,6 +3721,7 @@ mod tests {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         let mgr = ConnectionManager::new();
         mgr.connections
@@ -4908,6 +5294,7 @@ mod tests {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         let mgr = Arc::new(ConnectionManager::new());
         {
@@ -5281,6 +5668,7 @@ mod tests {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         let mgr = ConnectionManager::new();
         {
@@ -5503,6 +5891,7 @@ mod tests {
             message: "agent exploded".into(),
             agent_type: "claude_code".into(),
             code: Some("sdk_not_installed".into()),
+            details: None,
             terminal: true,
         });
         let captured = s.last_error.as_ref().expect("error must be captured");
@@ -5516,6 +5905,7 @@ mod tests {
             message: "second failure".into(),
             agent_type: "claude_code".into(),
             code: None,
+            details: None,
             terminal: true,
         });
         let captured = s.last_error.as_ref().unwrap();
@@ -5615,6 +6005,230 @@ mod tests {
         assert!(mgr.submit_feedback("c1", at_bound).await.is_ok());
         let state = mgr.get_state("c1").await.unwrap();
         assert_eq!(state.read().await.feedback.len(), 1, "only the valid note stuck");
+    }
+
+    // --- native steering (push channel) ----------------------------------
+
+    async fn mark_native_steering_ready(mgr: &ConnectionManager, conn_id: &str) {
+        let state = mgr.get_state(conn_id).await.unwrap();
+        let mut s = state.write().await;
+        s.native_steering_available = true;
+        s.turn_in_flight = true;
+    }
+
+    /// Play the connection loop's role: receive one `Steer` command and reply
+    /// the given outcome. Returns the text the command carried.
+    fn answer_steer(
+        mut rx: tokio::sync::mpsc::Receiver<ConnectionCommand>,
+        outcome: Result<SteerOutcome, AcpError>,
+    ) -> tokio::task::JoinHandle<String> {
+        tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ConnectionCommand::Steer { text, reply }) => {
+                    let _ = reply.send(outcome);
+                    text
+                }
+                _ => panic!("expected a Steer command"),
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn native_submit_injected_records_delivered_and_pull_stays_empty() {
+        let mgr = ConnectionManager::new();
+        let rx = mgr
+            .insert_test_connection_live("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        mark_native_steering_ready(&mgr, "c1").await;
+        // The pull tool coexists by design — and must see NOTHING (the
+        // no-double-delivery invariant: native notes are Delivered from birth,
+        // `read_pending_feedback` only returns Pending).
+        set_feedback_tool_available(&mgr, "c1").await;
+        let fake_loop = answer_steer(rx, Ok(SteerOutcome::Injected));
+
+        let item = mgr.submit_feedback("c1", "  ship it  ".into()).await.unwrap();
+        assert_eq!(item.status, FeedbackStatus::Delivered);
+        assert!(item.delivered_at.is_some());
+        assert_eq!(item.text, "ship it");
+        // The wire carried the trimmed text.
+        assert_eq!(fake_loop.await.unwrap(), "ship it");
+
+        let state = mgr.get_state("c1").await.unwrap();
+        {
+            let s = state.read().await;
+            assert_eq!(s.feedback.len(), 1);
+            assert_eq!(s.feedback[0].status, FeedbackStatus::Delivered);
+            assert!(s.native_steering_available, "injected must not downgrade");
+        }
+        assert!(
+            mgr.read_pending_feedback("c1").await.is_empty(),
+            "a check_user_feedback pull must never re-deliver a natively-injected note"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_submit_prompt_required_maps_to_no_active_turn_and_records_nothing() {
+        let mgr = ConnectionManager::new();
+        let rx = mgr
+            .insert_test_connection_live("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        mark_native_steering_ready(&mgr, "c1").await;
+        let fake_loop = answer_steer(rx, Ok(SteerOutcome::PromptRequired));
+
+        let err = mgr.submit_feedback("c1", "note".into()).await.unwrap_err();
+        assert!(matches!(err, AcpError::NoActiveTurn));
+        let _ = fake_loop.await;
+
+        let state = mgr.get_state("c1").await.unwrap();
+        let s = state.read().await;
+        // Content was NOT consumed (honored opt-in): nothing recorded, and the
+        // channel stays native — the caller resubmits as a normal prompt.
+        assert!(s.feedback.is_empty());
+        assert!(s.native_steering_available);
+    }
+
+    #[tokio::test]
+    async fn native_submit_started_new_turn_records_delivered_and_downgrades_to_pull() {
+        let mgr = ConnectionManager::new();
+        let rx = mgr
+            .insert_test_connection_live("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        mark_native_steering_ready(&mgr, "c1").await;
+        set_feedback_tool_available(&mgr, "c1").await;
+        let fake_loop = answer_steer(rx, Ok(SteerOutcome::StartedNewTurn));
+
+        // The adapter ignored the opt-in: content consumed → recorded
+        // Delivered (never resent), and the session downgrades to pull.
+        let item = mgr.submit_feedback("c1", "note one".into()).await.unwrap();
+        assert_eq!(item.status, FeedbackStatus::Delivered);
+        let _ = fake_loop.await;
+        let state = mgr.get_state("c1").await.unwrap();
+        assert!(
+            !state.read().await.native_steering_available,
+            "startedNewTurn must downgrade native steering for the session"
+        );
+
+        // The NEXT note rides the pull path: lands Pending, no Steer command
+        // (the loop receiver was consumed above — a native attempt would fail
+        // on the dead channel, so an Ok(Pending) proves the pull branch ran).
+        let second = mgr.submit_feedback("c1", "note two".into()).await.unwrap();
+        assert_eq!(second.status, FeedbackStatus::Pending);
+        let pending = mgr.read_pending_feedback("c1").await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].text, "note two");
+    }
+
+    #[tokio::test]
+    async fn native_submit_records_even_when_turn_settles_before_the_reply() {
+        // The ungated-emit invariant: the adapter's `injected` reply is
+        // authoritative even if `TurnComplete` lands first. A gated emit here
+        // would misreport NoActiveTurn → the frontend would resend the same
+        // text as a prompt → duplicate.
+        let mgr = ConnectionManager::new();
+        let rx = mgr
+            .insert_test_connection_live("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        mark_native_steering_ready(&mgr, "c1").await;
+        let state = mgr.get_state("c1").await.unwrap();
+
+        let state_for_loop = state.clone();
+        let mut rx = rx;
+        let fake_loop = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ConnectionCommand::Steer { reply, .. }) => {
+                    // The turn settles BETWEEN the injection and the reply.
+                    state_for_loop.write().await.turn_in_flight = false;
+                    let _ = reply.send(Ok(SteerOutcome::Injected));
+                }
+                _ => panic!("expected a Steer command"),
+            }
+        });
+
+        let item = mgr.submit_feedback("c1", "late note".into()).await.unwrap();
+        assert_eq!(item.status, FeedbackStatus::Delivered);
+        let _ = fake_loop.await;
+        assert_eq!(state.read().await.feedback.len(), 1);
+
+        // The next turn's UserMessage clears the (turn-scoped) note — the
+        // post-turn residue is bounded and harmless.
+        state.write().await.apply_event(&AcpEvent::UserMessage {
+            message_id: "m-next".into(),
+            blocks: Vec::new(),
+        });
+        assert!(state.read().await.feedback.is_empty());
+    }
+
+    #[tokio::test]
+    async fn native_submit_records_despite_caller_cancellation() {
+        // Cancellation-shield regression, mirroring
+        // `fork_persists_despite_caller_cancellation`: once `Steer` is
+        // enqueued the adapter may consume the text regardless of caller
+        // liveness, so the Delivered record + broadcast must not be tied to
+        // the caller's future.
+        let mgr = ConnectionManager::new();
+        let rx = mgr
+            .insert_test_connection_live("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        mark_native_steering_ready(&mgr, "c1").await;
+
+        let (go_tx, go_rx) = tokio::sync::oneshot::channel::<()>();
+        let mut rx = rx;
+        let fake_loop = tokio::spawn(async move {
+            if let Some(ConnectionCommand::Steer { reply, .. }) = rx.recv().await {
+                go_rx.await.ok(); // withhold the outcome until the caller is gone
+                let _ = reply.send(Ok(SteerOutcome::Injected));
+            }
+            rx // keep the receiver alive
+        });
+
+        // Drive the submit under a short timeout: the shielded task enqueues
+        // `Steer` and blocks on the withheld reply; the timeout DROPS this
+        // caller future.
+        let timed = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            mgr.submit_feedback("c1", "shielded note".into()),
+        )
+        .await;
+        assert!(
+            timed.is_err(),
+            "caller must be dropped before the withheld outcome is delivered"
+        );
+
+        // Release the outcome: the DETACHED task records the note anyway.
+        go_tx.send(()).ok();
+        let _ = fake_loop.await;
+        let state = mgr.get_state("c1").await.unwrap();
+        let mut recorded = false;
+        for _ in 0..200 {
+            {
+                let s = state.read().await;
+                if s.feedback.len() == 1 && s.feedback[0].status == FeedbackStatus::Delivered {
+                    recorded = true;
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(
+            recorded,
+            "native delivery must be recorded despite caller cancellation"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_only_session_accepts_notes_without_the_pull_tool() {
+        // The native channel needs no MCP companion (that's the point):
+        // eligibility is channel-aware, not tool-only.
+        let mgr = ConnectionManager::new();
+        let rx = mgr
+            .insert_test_connection_live("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        mark_native_steering_ready(&mgr, "c1").await;
+        // feedback_tool_available stays false.
+        let fake_loop = answer_steer(rx, Ok(SteerOutcome::Injected));
+        let item = mgr.submit_feedback("c1", "no tool needed".into()).await.unwrap();
+        assert_eq!(item.status, FeedbackStatus::Delivered);
+        let _ = fake_loop.await;
     }
 
     // --- ask_user_question: register / answer / cancel -------------------
