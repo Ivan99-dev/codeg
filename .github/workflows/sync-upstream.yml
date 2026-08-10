@@ -6,6 +6,7 @@ on:
     - cron: "17 19 * * *"
 
 permissions:
+  actions: write
   contents: write
 
 concurrency:
@@ -25,6 +26,8 @@ jobs:
 
       - name: Merge upstream main into fork main
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -33,3 +36,23 @@ jobs:
           git fetch upstream main
           git merge --no-edit upstream/main
           git push origin main
+
+          APP_VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          RELEASE_TAG="v${APP_VERSION}"
+          echo "Resolved release tag: ${RELEASE_TAG}"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Tag ${RELEASE_TAG} already exists"
+          else
+            git tag "${RELEASE_TAG}"
+            git push origin "${RELEASE_TAG}"
+            echo "Created tag ${RELEASE_TAG}"
+          fi
+
+          RELEASE_DRAFT=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.draft' 2>/dev/null || echo missing)
+          if [[ "${RELEASE_DRAFT}" == "false" ]]; then
+            echo "Published release ${RELEASE_TAG} already exists; skip dispatch"
+          else
+            echo "Dispatching Release workflow for ${RELEASE_TAG}"
+            gh workflow run release.yml --repo "${GITHUB_REPOSITORY}" --ref main -f tag="${RELEASE_TAG}"
+          fi
