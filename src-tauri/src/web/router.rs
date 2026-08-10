@@ -109,6 +109,10 @@ pub fn build_router(
             post(handlers::conversations::get_folder_conversation),
         )
         .route(
+            "/get_folder_conversation_turns",
+            post(handlers::conversations::get_folder_conversation_turns),
+        )
+        .route(
             "/list_opened_tabs",
             post(handlers::conversations::list_opened_tabs),
         )
@@ -395,6 +399,10 @@ pub fn build_router(
         .route("/git_commit", post(handlers::git::git_commit))
         .route("/git_fetch_remote", post(handlers::git::git_fetch_remote))
         .route("/git_delete_branch", post(handlers::git::git_delete_branch))
+        .route(
+            "/git_remove_worktree",
+            post(handlers::git::git_remove_worktree),
+        )
         .route(
             "/git_delete_remote_branch",
             post(handlers::git::git_delete_remote_branch),
@@ -1555,6 +1563,11 @@ pub fn build_router(
         .layer(cors)
         .layer(Extension(state))
         .layer(Extension(shutdown_signal))
+        // Outermost: compress API JSON and static text assets. Allowlist
+        // predicate — binary downloads keep their exact Content-Length (the
+        // remote proxy's progress source) and SSE stays unbuffered; see
+        // `web::compression`.
+        .layer(crate::web::compression::compression_layer())
 }
 
 fn cache_control_for_static_path(path: &str) -> Option<HeaderValue> {
