@@ -400,7 +400,7 @@ jobs:
           # fails when externalBin is configured. NSIS installer + updater
           # artifacts cover the same distribution channel.
           args: --target ${{ matrix.target }} --bundles nsis,updater
-          includeUpdaterJson: true
+          includeUpdaterJson: false
           retryAttempts: 2
 
       - name: Build and upload to draft release (Linux x64)
@@ -422,7 +422,7 @@ jobs:
           prerelease: ${{ needs.create-draft-release.outputs.prerelease }}
           tauriScript: pnpm tauri
           args: --target ${{ matrix.target }}
-          includeUpdaterJson: true
+          includeUpdaterJson: false
           retryAttempts: 2
 
       - name: Build and upload to draft release (macOS unsigned)
@@ -444,8 +444,45 @@ jobs:
           prerelease: ${{ needs.create-draft-release.outputs.prerelease }}
           tauriScript: pnpm tauri
           args: --target ${{ matrix.target }}
-          includeUpdaterJson: true
+          includeUpdaterJson: false
           retryAttempts: 2
+
+  generate-updater-json:
+    needs:
+      - create-draft-release
+      - build-tauri
+    if: ${{ needs.build-tauri.result == 'success' }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate and upload complete updater manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.create-draft-release.outputs.tag }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p updater-assets
+          gh release view "${RELEASE_TAG}" \
+            --json assets \
+            --jq '.assets[].name' \
+            > updater-assets/assets.txt
+          gh release view "${RELEASE_TAG}" \
+            --json body \
+            --jq '.body' \
+            > updater-assets/notes.md
+          gh release download "${RELEASE_TAG}" \
+            --pattern '*.sig' \
+            --dir updater-assets
+          node .github/scripts/generate-updater-json.mjs \
+            --asset-dir updater-assets \
+            --output updater-assets/latest.json
+          gh release upload "${RELEASE_TAG}" \
+            updater-assets/latest.json \
+            --clobber
 
   build-server:
     needs: create-draft-release
@@ -728,9 +765,10 @@ jobs:
     needs:
       - create-draft-release
       - build-tauri
+      - generate-updater-json
       - build-server
       - build-docker
-    if: ${{ needs.build-tauri.result == 'success' && needs.build-server.result == 'success' && needs.build-docker.result == 'success' }}
+    if: ${{ needs.build-tauri.result == 'success' && needs.generate-updater-json.result == 'success' && needs.build-server.result == 'success' && needs.build-docker.result == 'success' }}
     runs-on: ubuntu-22.04
     permissions:
       contents: write
