@@ -216,6 +216,12 @@ pub enum AcpEvent {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         parent_tool_use_id: Option<String>,
     },
+    /// Agent published a live session title via ACP `session_info_update.title`.
+    /// Applied to the conversation row by the lifecycle worker (unlocked titles
+    /// only). The sidebar converges through `conversation://changed`; this event
+    /// itself is not rendered. Omitted when the update carries no title so
+    /// goal-only `session_info_update`s stay off the lifecycle path.
+    NativeSessionTitle { title: String },
     /// Backend has transitioned the conversation row's `status` column.
     /// Emitted by `send_prompt_linked` (`InProgress`) and the lifecycle
     /// subscriber on `TurnComplete` (`PendingReview`). The frontend mirrors
@@ -825,6 +831,17 @@ pub struct AcpAgentInfo {
     pub skills_capable: bool,
     pub registry_id: String,
     pub registry_version: Option<String>,
+    /// Whether "install a specific version" can actually fetch that version.
+    ///
+    /// NOT derivable from `registry_version` + `distribution_type`, which is
+    /// what the settings page used to infer it from: a binary agent's custom
+    /// install works by substituting the requested version into the pinned
+    /// download URL, and Antigravity's URLs carry a Google build id rather than
+    /// its registry version, so the substitution is a no-op and the install
+    /// would relabel the same bytes. Resolved by
+    /// [`crate::acp::registry::AcpAgentMeta::supports_custom_version`], which
+    /// checks the URL for THIS platform.
+    pub supports_custom_version: bool,
     pub name: String,
     pub description: String,
     pub available: bool,

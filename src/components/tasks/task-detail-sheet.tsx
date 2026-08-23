@@ -83,6 +83,7 @@ import {
   TaskMessageComposer,
   type TaskMessageComposerHandle,
 } from "./task-message-composer"
+import { TaskTranscriptDialog } from "./task-transcript-dialog"
 import {
   duplicateActiveSource,
   duplicateActiveSourceLabel,
@@ -117,12 +118,13 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet"
+  Drawer,
+  DrawerContent,
+  DrawerDescription,
+  DrawerHeader,
+  DrawerTitle,
+  SIDE_PANEL_CONTENT_CLASS,
+} from "@/components/ui/drawer"
 import {
   Tooltip,
   TooltipContent,
@@ -164,8 +166,6 @@ interface TaskDetailSheetProps {
   /** The live task row (already refreshed by the board's provider). */
   task: WorkTask | null
   folderName: string | null
-  /** Opens the page-owned read-only live session viewer. */
-  onViewSession: (task: WorkTask) => void
   onMerge: (task: WorkTask) => void
   /** Replaces merge when the task changed nothing (see `hasNothingToMerge`). */
   onComplete: (task: WorkTask) => void
@@ -181,7 +181,7 @@ interface TaskDetailSheetProps {
   onSchedule: (task: WorkTask) => void
 }
 
-/** One button of the sheet's action panel (see below). */
+/** One button of the drawer's action panel (see below). */
 interface ZoneAction {
   icon: typeof Play
   label: string
@@ -207,7 +207,6 @@ export function TaskDetailSheet({
   onOpenChange,
   task,
   folderName,
-  onViewSession,
   onMerge,
   onComplete,
   onDeliverPr,
@@ -244,6 +243,20 @@ export function TaskDetailSheet({
   /** Confirm for the footer's standalone worktree removal (`canRemoveWorktree`
    *  decides who is offered it). */
   const [cleanupOpen, setCleanupOpen] = useState(false)
+  /**
+   * The read-only live session viewer, owned HERE rather than by the board.
+   *
+   * It used to be raised through an `onViewSession` callback and rendered by
+   * `tasks-page.tsx` as a sibling of this sheet. Both are drawers, and Base UI
+   * only stacks a drawer that is a React DESCENDANT of the one it opens over
+   * (nesting rides `DialogRootContext` — see `useRenderDialogRoot`), so as
+   * siblings they could never stack: the viewer just landed on top with the
+   * sheet still at full size underneath. Mounting it inside our own `Drawer`
+   * gets the real thing — the sheet scales back and dims, and Escape unwinds
+   * one layer at a time. The board keeps its own top-level instance for the
+   * card's "查看会话" action, which opens with no sheet in play.
+   */
+  const [sessionOpen, setSessionOpen] = useState(false)
   const [diffFile, setDiffFile] = useState<string | null | false>(false)
   const [busy, setBusy] = useState(false)
   /** Synchronous in-flight latch for the follow-up send (see submitFollowUp). */
@@ -668,12 +681,9 @@ export function TaskDetailSheet({
 
   return (
     <>
-      <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent
-          side="right"
-          className="flex w-full flex-col gap-0 p-0 sm:max-w-[44rem]"
-        >
-          <SheetHeader className="shrink-0 gap-0 border-b border-border px-5 py-4">
+      <Drawer open={open} onOpenChange={onOpenChange} swipeDirection="right">
+        <DrawerContent className={SIDE_PANEL_CONTENT_CLASS}>
+          <DrawerHeader className="shrink-0 gap-0 border-b border-border px-5 py-4">
             {/* Agent glyph, then the title block. The status chip rides
                 directly beside the title rather than being pinned to the far
                 edge — it reads as part of the name, not as a separate
@@ -695,9 +705,9 @@ export function TaskDetailSheet({
               </span>
               <div className="flex min-w-0 flex-1 flex-col gap-1">
                 <div className="flex min-w-0 items-start gap-2">
-                  <SheetTitle className="min-w-0 break-words text-[0.9375rem] font-semibold leading-5">
+                  <DrawerTitle className="min-w-0 break-words text-[0.9375rem] font-semibold leading-5">
                     {task.title}
-                  </SheetTitle>
+                  </DrawerTitle>
                   {/* One title line tall, centring its own content: the chips
                       differ in height (pill vs bare spinner text), so a fixed
                       margin would only ever centre one of them — and a
@@ -740,10 +750,10 @@ export function TaskDetailSheet({
                 </div>
               </div>
             </div>
-            <SheetDescription className="sr-only">
+            <DrawerDescription className="sr-only">
               {t("detailDescription")}
-            </SheetDescription>
-          </SheetHeader>
+            </DrawerDescription>
+          </DrawerHeader>
 
           <ScrollArea className="min-h-0 flex-1">
             <div className="flex flex-col gap-5 px-5 py-4">
@@ -1248,7 +1258,7 @@ export function TaskDetailSheet({
                   icon={MessageSquareText}
                   label={t("actionViewSession")}
                   busy={false}
-                  onClick={() => onViewSession(task)}
+                  onClick={() => setSessionOpen(true)}
                 />
               ) : null}
               {canEdit ? (
@@ -1291,8 +1301,18 @@ export function TaskDetailSheet({
               ) : null}
             </div>
           ) : null}
-        </SheetContent>
-      </Sheet>
+        </DrawerContent>
+
+        {/* Inside the `Drawer` (so it nests) but outside `DrawerContent` (so
+            it escapes the content's `overflow-hidden` and the `opacity-0` the
+            content takes on while a nested drawer is open). Anywhere under
+            the root is enough — nesting is context, not DOM. */}
+        <TaskTranscriptDialog
+          open={sessionOpen}
+          onOpenChange={setSessionOpen}
+          task={task}
+        />
+      </Drawer>
 
       {/* Per-file / full diff viewer. */}
       <Dialog

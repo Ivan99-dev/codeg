@@ -2150,6 +2150,33 @@ fn annotate_npm_bootstrap_failure(package: &str, err: AcpError) -> AcpError {
     ))
 }
 
+/// Name the proxy when npm refused to parse the proxy address itself.
+///
+/// npm resolves `HTTP(S)_PROXY` with WHATWG `new URL()`, where a scheme may not
+/// start with a digit, so a bare `127.0.0.1:7890` aborts the install with a
+/// context-free `ERR_INVALID_URL` before any network I/O — no mention of a
+/// proxy, no mention of which variable. codeg normalizes the address it exports
+/// from Settings, so what reaches here is an externally-provided value (docker
+/// `-e`, a shell export) that the startup contract leaves untouched.
+fn annotate_npm_proxy_url_failure(err: AcpError) -> AcpError {
+    let AcpError::Protocol(message) = &err else {
+        return err;
+    };
+    if !message.contains("ERR_INVALID_URL") && !message.contains("Invalid URL") {
+        return err;
+    }
+    let offenders = crate::network::proxy::proxy_env_vars_missing_scheme();
+    if offenders.is_empty() {
+        return err;
+    }
+    AcpError::Protocol(format!(
+        "{message}\n\nnpm could not parse the proxy address in {} — it has no scheme. \
+         npm requires one (codeg's own HTTP client does not, which is why updates still \
+         work). Set it to a full URL, e.g. `http://127.0.0.1:7890`.",
+        offenders.join(", ")
+    ))
+}
+
 /// Run an npm command with piped stdout/stderr, streaming each line as a log event.
 /// Returns (success: bool, collected_stderr: String) so callers can inspect errors.
 async fn run_npm_streaming(
@@ -2228,7 +2255,23 @@ async fn run_npm_streaming(
     Ok((status.success(), collected_stderr))
 }
 
+/// Install an npm package globally, streaming progress, with the proxy
+/// diagnostic attached to every failure.
+///
+/// The annotation lives here rather than at the call sites so it covers each
+/// entry point — the pinned npx agents and the `pi` binary prerequisite alike —
+/// and cannot be forgotten by the next one.
 async fn install_npm_global_package_streaming(
+    package: &str,
+    task_id: &str,
+    emitter: &EventEmitter,
+) -> Result<(), AcpError> {
+    install_npm_global_package_streaming_inner(package, task_id, emitter)
+        .await
+        .map_err(annotate_npm_proxy_url_failure)
+}
+
+async fn install_npm_global_package_streaming_inner(
     package: &str,
     task_id: &str,
     emitter: &EventEmitter,
@@ -5458,6 +5501,45 @@ pub(crate) fn pi_project_trust_launch_block(
     ))
 }
 
+/// Write Antigravity's `auth.type` (and `gcp` block) from the STORED agent row,
+/// and report what happened.
+///
+/// The settings panel calls this straight after saving. The launch path runs the
+/// same sync, but only at launch and only into the log — which made the panel's
+/// "saved" mean less than it looked: the env row is not what authenticates
+/// Antigravity, `<GEMINI_HOME>/antigravity-acp/settings.json` is, and when that
+/// file cannot be rewritten (it is Hjson with comments, it is unreadable, its
+/// `auth` is not an object) the two part ways silently. Switching methods is
+/// where that bites: the launch scrubs the credentials for the NEW method while
+/// the server still reads the OLD `auth.type`, so `session/new` fails with no
+/// credential for the method it believes it is using — hours after the save
+/// that caused it.
+///
+/// Reads the row rather than taking the env from the caller so it reports on
+/// what was actually persisted, not on what the request claimed.
+pub(crate) async fn acp_sync_antigravity_settings_core(
+    db: &AppDatabase,
+) -> Result<crate::acp::connection::AntigravitySyncReport, AcpError> {
+    // The read error is PROPAGATED, unlike the `.ok().flatten()` the pi trust
+    // path uses. This function's whole job is to report on the stored row, and
+    // treating a failed read as "no row" would not merely lose the method — it
+    // would hand the sync an empty environment, which on a machine with no
+    // settings.json yet writes `oauth-personal` and reports success for a
+    // choice the user did not make.
+    let setting = agent_setting_service::get_by_agent_type(&db.conn, AgentType::Antigravity)
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+    let local_config_json = load_agent_local_config_json(AgentType::Antigravity);
+    let runtime_env = build_runtime_env_from_setting(
+        AgentType::Antigravity,
+        setting.as_ref(),
+        local_config_json.as_deref(),
+    );
+    Ok(crate::acp::connection::sync_antigravity_settings_for_env(
+        &runtime_env,
+    ))
+}
+
 pub(crate) async fn acp_pi_project_trust_state_core(
     db: &AppDatabase,
     workspace: String,
@@ -7404,6 +7486,16 @@ fn agent_local_config_path(agent_type: AgentType) -> Option<PathBuf> {
     match agent_type {
         AgentType::ClaudeCode => Some(home_dir_or_default().join(".claude").join("settings.json")),
         AgentType::Gemini => Some(home_dir_or_default().join(".gemini").join("settings.json")),
+        // Antigravity's ACP server keeps its own `settings.json` under
+        // `<GEMINI_HOME>/antigravity-acp/` — a DIFFERENT file from Gemini
+        // CLI's above, even though both trees default to `~/.gemini`. Exposing
+        // the path lights up "open config file"; the write side is owned by
+        // `acp::connection::sync_antigravity_settings_file` at launch, which
+        // merges only `auth.type` and the `gcp` block and leaves every other
+        // key the user put there alone.
+        AgentType::Antigravity => Some(
+            crate::parsers::antigravity::resolve_antigravity_acp_dir().join("settings.json"),
+        ),
         AgentType::OpenCode => Some(resolve_opencode_config_path()),
         AgentType::Cline => Some(cline_global_state_path()),
         // Kimi Code's native config is `~/.kimi-code/config.toml`. Exposing the
@@ -7769,6 +7861,37 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
                 crate::parsers::qoder::qoder_project_skills_rel_dir(),
                 ".agents/skills",
             ],
+        }),
+        // Antigravity's roots are `server.py::resolve_skills_paths`, verbatim
+        // and in its order:
+        //
+        //   home       `<GEMINI_HOME>/config/skills`        ← cross-surface global
+        //   workspace  `<cwd>/.gemini/skills`
+        //   home       `<GEMINI_HOME>/antigravity-cli/skills` ← the CLI's, read too
+        //   workspace  `<cwd>/.agents/skills`
+        //
+        // Both home roots follow the resolved `GEMINI_HOME` on purpose: the
+        // server's own comment records that a `$HOME`-anchored entry here used
+        // to hand the real `~/.gemini` to the agent even when the home had
+        // been relocated. `config/skills` leads because it is the directory
+        // Antigravity itself calls the global one; `antigravity-cli/skills`
+        // belongs to the CLI and is only READ, so installs must not land
+        // there ahead of it.
+        //
+        // `SkillDirectoryOnly`: the discovery docstring says "SKILL.md files
+        // or skill subfolders", which does not distinguish a bundle's
+        // `<id>/SKILL.md` from a flat `<id>.md`, and the actual scan happens
+        // inside the Go harness. The directory bundle is the shape every agent
+        // supports, so codeg installs that rather than guessing at the wider
+        // one and writing skills the agent may never load.
+        AgentType::Antigravity => Some(SkillStorageSpec {
+            kind: SkillStorageKind::SkillDirectoryOnly,
+            global_dirs: vec![
+                crate::parsers::antigravity::resolve_antigravity_shared_config_dir()
+                    .join("skills"),
+                crate::parsers::antigravity::resolve_antigravity_cli_dir().join("skills"),
+            ],
+            project_rel_dirs: vec![".gemini/skills", ".agents/skills"],
         }),
         // codeg cannot detect where an arbitrary ACP agent loads skills from,
         // so custom agents are gated on the user's own declaration: that the
@@ -8892,6 +9015,21 @@ fn agent_env_keys(agent_type: AgentType) -> (&'static str, &'static str, &'stati
             "QODER_PERSONAL_ACCESS_TOKEN",
             "QODER_MODEL",
         ),
+        // Antigravity's credential depends on the auth method the settings
+        // panel picked, and the panel writes the right one directly; the slot
+        // named here is the Gemini Developer API key, which is what
+        // `auth.type = "gemini-api-key"` reads (the server says so in its own
+        // `auth_required` message). `AGY_ACP_DEFAULT_MODEL` is real — it is
+        // the env the server's `get_default_model_id` consults before falling
+        // back to `gemini-3.7-flash-high`. There is NO endpoint override, so
+        // the base-url slot stays an inert `AGY_BASE_URL` placeholder for the
+        // same reason `CURSOR_MODEL`/`QODER_BASE_URL` above are: it keeps the
+        // generic cascade off the `OPENAI_*` keys.
+        AgentType::Antigravity => (
+            "AGY_BASE_URL",
+            "GEMINI_API_KEY",
+            "AGY_ACP_DEFAULT_MODEL",
+        ),
         _ => ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"),
     }
 }
@@ -9323,6 +9461,18 @@ fn cascade_update_agent_config(
             // env, and while codeg DOES manage a Qoder config file
             // (`settings.json`, via the Qoder settings panel), that file holds
             // no credentials for the cascade to reconcile.
+        }
+        AgentType::Antigravity => {
+            // Antigravity only ever talks to Google's own endpoints (CCPA for
+            // the consumer path, BAIC for Gemini Enterprise, the Gemini
+            // Developer API for a raw key), none of which accepts a custom
+            // base URL — so it stays off the model-provider credential
+            // cascade. Its credentials come from the auth method the settings
+            // panel recorded, which the launch path projects into the process
+            // env and into `antigravity-acp/settings.json` (see
+            // `sync_antigravity_settings_file`); that file carries the chosen
+            // METHOD, never a credential, so there is nothing here to
+            // reconcile either.
         }
         AgentType::Custom(_) => {
             // Custom agents are deliberately configuration-free: codeg writes
@@ -10288,6 +10438,7 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
             agent_type,
             registry_id: registry::registry_id_for(agent_type).to_string(),
             registry_version: meta.registry_version().map(ToString::to_string),
+            supports_custom_version: meta.supports_custom_version(),
             name: meta.name.to_string(),
             description: meta.description.to_string(),
             available,
@@ -11169,6 +11320,16 @@ pub async fn acp_pi_project_trust_state(
     acp_pi_project_trust_state_core(&db, workspace).await
 }
 
+/// Project the saved Antigravity auth choice into the server's settings file,
+/// and say whether it landed. Called by the settings panel after a save.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_sync_antigravity_settings(
+    db: tauri::State<'_, AppDatabase>,
+) -> Result<crate::acp::connection::AntigravitySyncReport, AcpError> {
+    acp_sync_antigravity_settings_core(&db).await
+}
+
 /// Record (or clear, with `trusted: null`) an explicit project-trust decision in
 /// pi's `trust.json`. Only ever called from a user action in the approval UI.
 #[cfg(feature = "tauri-runtime")]
@@ -11340,9 +11501,16 @@ pub(crate) async fn acp_download_agent_binary_core(
             // cache key; `None`/empty keeps the registry-pinned version.
             let custom = match version_override.as_deref() {
                 Some(raw) if !raw.trim().is_empty() => {
-                    Some(sanitize_custom_version(raw).ok_or_else(|| {
+                    let sanitized = sanitize_custom_version(raw).ok_or_else(|| {
                         AcpError::protocol(format!("invalid custom version: {}", raw.trim()))
-                    })?)
+                    })?;
+                    // Asking for the version that is already pinned is a normal
+                    // install, not a custom one. Keeping it as `Some` would make
+                    // the substitution below a no-op and trip the "not
+                    // templatable" refusal on the one request that is trivially
+                    // satisfiable — and would drop the registry's digest for a
+                    // URL that has not changed.
+                    (sanitized != version).then_some(sanitized)
                 }
                 _ => None,
             };
@@ -11360,7 +11528,25 @@ pub(crate) async fn acp_download_agent_binary_core(
 
             let effective_version = custom.as_deref().unwrap_or(version);
             let archive_url = match &custom {
-                Some(c) => apply_custom_version_to_url(fallback.url, version, c),
+                Some(c) => {
+                    let substituted = apply_custom_version_to_url(fallback.url, version, c);
+                    // The substitution is the whole mechanism: when the pinned
+                    // version is not a substring of the URL, asking for another
+                    // one downloads the SAME archive and caches it under the
+                    // requested number, so `installed_version` reports a build
+                    // that was never fetched. Refuse instead of lying — the UI
+                    // hides the control for these agents
+                    // (`supports_custom_version`), and this is the backstop for
+                    // a direct API call.
+                    if substituted == fallback.url {
+                        return Err(AcpError::protocol(format!(
+                            "{} publishes no version-templated download URL, so it cannot install \
+                             a custom version ({c}); its pinned build is {version}",
+                            meta.name
+                        )));
+                    }
+                    substituted
+                }
                 None => fallback.url.to_string(),
             };
 
@@ -17490,5 +17676,25 @@ model = "gpt"
             AcpError::Protocol("failed to install npm package globally: EACCES".to_string()),
         );
         assert!(!permissions.to_string().contains("HTTP(S)_PROXY"));
+    }
+
+    /// The proxy hint is keyed on npm's URL-parse failure, so every other way an
+    /// install can die has to pass through untouched. (The positive branch also
+    /// requires a scheme-less proxy in the process env; asserting that would
+    /// mean mutating env under a parallel test binary.)
+    #[test]
+    fn npm_proxy_url_hint_leaves_unrelated_failures_alone() {
+        for err in [
+            AcpError::Protocol("failed to install npm package globally: EACCES".to_string()),
+            AcpError::Protocol("failed to install npm package globally: ETIMEDOUT".to_string()),
+            AcpError::SdkNotInstalled("npm is not installed".to_string()),
+        ] {
+            let before = err.to_string();
+            assert_eq!(
+                annotate_npm_proxy_url_failure(err).to_string(),
+                before,
+                "only an ERR_INVALID_URL failure may be annotated"
+            );
+        }
     }
 }
