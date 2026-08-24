@@ -216,10 +216,22 @@ fn test_engine(db: AppDatabase) -> Arc<TaskEngine> {
 /// the credential store.
 #[cfg(test)]
 fn test_engine_with_forge(db: AppDatabase, forge: Arc<dyn ForgeDeliveryApi>) -> Arc<TaskEngine> {
+    test_engine_full(db, forge, EventEmitter::Noop)
+}
+
+/// As [`test_engine_with_forge`], with the emitter chosen by the caller — the
+/// broadcast-ordering tests need a real `WebEventBroadcaster` behind it to read
+/// back what the engine announced, and in what order.
+#[cfg(test)]
+fn test_engine_full(
+    db: AppDatabase,
+    forge: Arc<dyn ForgeDeliveryApi>,
+    emitter: EventEmitter,
+) -> Arc<TaskEngine> {
     Arc::new(TaskEngine {
         db,
         manager: ConnectionManager::new(),
-        emitter: EventEmitter::Noop,
+        emitter,
         bus: Arc::new(InternalEventBus::new(Default::default())),
         // An anonymous temp file, not a handle on `data_dir`: opening a
         // DIRECTORY as a File succeeds on Unix but fails on Windows.
@@ -432,6 +444,10 @@ enum LaunchMode {
         strategy: String,
         /// `None` → the agent writes the commit message itself.
         message: Option<String>,
+        /// Whatever the user added in the merge dialog, verbatim. `None` when
+        /// they left it empty — which is every merge dispatched before this
+        /// existed, and the auto-merge sweep's every landing.
+        instructions: Option<String>,
     },
 }
 
@@ -2422,10 +2438,11 @@ impl TaskEngine {
                     ),
                 )
                 .await;
+                self.emit_upsert(task_id);
             } else {
+                // Broadcast omitted: the removal announces its own outcome.
                 self.remove_worktree_locked(task_id).await;
             }
-            self.emit_upsert(task_id);
         }
         Ok(())
     }
@@ -2571,9 +2588,10 @@ impl TaskEngine {
         task_id: i32,
         message: Option<String>,
         delete_worktree: bool,
+        instructions: Option<String>,
         auto: bool,
     ) -> Result<MergeDispatch, String> {
-        self.merge_task_inner(task_id, message, delete_worktree, auto, None)
+        self.merge_task_inner(task_id, message, delete_worktree, instructions, auto, None)
             .await
     }
 
@@ -2582,6 +2600,7 @@ impl TaskEngine {
         task_id: i32,
         message: Option<String>,
         delete_worktree: bool,
+        instructions: Option<String>,
         auto: bool,
         claim: Option<&QueuedMergeClaim>,
     ) -> Result<MergeDispatch, String> {
@@ -2608,6 +2627,11 @@ impl TaskEngine {
         let message = message
             .map(|m| m.trim().to_string())
             .filter(|m| !m.is_empty());
+        // Same normalization as the message: whitespace-only is "the user typed
+        // nothing", and nothing is what the prompt must then omit entirely.
+        let instructions = instructions
+            .map(|i| i.trim().to_string())
+            .filter(|i| !i.is_empty());
         let settings = work_task_service::settings_get_effective(&self.db.conn, task.folder_id)
             .await
             .unwrap_or_default();
@@ -2653,6 +2677,7 @@ impl TaskEngine {
             let intent = WorkTaskQueuedMerge {
                 message,
                 delete_worktree,
+                instructions,
                 queued_at,
             };
             let queued = work_task_service::queue_merge(
@@ -2698,6 +2723,7 @@ impl TaskEngine {
             strategy: strategy.clone(),
             delete_worktree,
             auto_message: message.is_none(),
+            instructions: instructions.clone(),
             ..Default::default()
         };
         // Keep recovery away from the dispatch window (begin → live conn).
@@ -2747,6 +2773,7 @@ impl TaskEngine {
                             work_branch: work_branch.clone(),
                             strategy,
                             message,
+                            instructions,
                         },
                         &merge_seq,
                     )
@@ -3985,6 +4012,7 @@ impl TaskEngine {
                     task.id,
                     intent.message.clone(),
                     intent.delete_worktree,
+                    intent.instructions.clone(),
                     false,
                     Some(&claim),
                 )
@@ -4123,7 +4151,8 @@ impl TaskEngine {
                 continue;
             }
             match self
-                .merge_task(task.id, None, settings.delete_worktree_default, true)
+                // No instructions: nobody was at the keyboard to write any.
+                .merge_task(task.id, None, settings.delete_worktree_default, None, true)
                 .await
             {
                 // An unattended dispatch never queues (see `merge_task`), so
@@ -4265,12 +4294,33 @@ impl TaskEngine {
         }
         let lock = self.folder_lock(task.folder_id).await;
         let _guard = lock.lock().await;
+        // No `emit_upsert` here: the removal owns that broadcast now, and only
+        // it can tell a pass that changed the row from one that found nothing
+        // to do.
         self.remove_worktree_locked(task_id).await;
-        self.emit_upsert(task_id);
         Ok(())
     }
 
-    /// Git-first-then-DB worktree removal. Caller holds the folder git lock.
+    /// Git-first-then-DB worktree removal, and the `task://changed` that tells
+    /// clients about it. Caller holds the folder git lock.
+    ///
+    /// The broadcast lives HERE rather than at the call sites: this is the only
+    /// thing that knows whether the row moved, and the acceptance paths reach it
+    /// AFTER their own `emit_upsert` (`settle_merge_generation`,
+    /// `recover_merging`) — so a caller-side convention leaves the card holding
+    /// a snapshot taken before the worktree was detached, and its "worktree
+    /// removed" badge (`worktreeWasRemoved`, keyed on `worktree_folder_id`)
+    /// never appears until a full refetch. `converge_worktree_removal` owns its
+    /// folder / conversation / tab broadcasts for the same reason.
+    async fn remove_worktree_locked(&self, task_id: i32) {
+        if self.remove_worktree_inner(task_id).await {
+            self.emit_upsert(task_id);
+        }
+    }
+
+    /// The removal itself. Returns whether it wrote to the task row — the
+    /// broadcast in [`Self::remove_worktree_locked`] rides that answer, so a
+    /// pass that decided there was nothing to do stays silent.
     ///
     /// Order matters: the git removal runs first; only after it succeeds does
     /// the DB transaction re-parent the worktree's conversations onto the
@@ -4278,9 +4328,9 @@ impl TaskEngine {
     /// the folder row. A git failure flags `cleanup_state='failed'` (retryable
     /// from the card) and leaves the DB untouched; a `done` task never leaves
     /// `done` either way.
-    async fn remove_worktree_locked(&self, task_id: i32) {
+    async fn remove_worktree_inner(&self, task_id: i32) -> bool {
         let Ok(task) = work_task_service::get_model(&self.db.conn, task_id).await else {
-            return;
+            return false;
         };
         let Some(wt_id) = task.worktree_folder_id else {
             // Nothing left to remove. A cleanup flag surviving past the
@@ -4288,8 +4338,9 @@ impl TaskEngine {
             if task.cleanup_state.is_some() {
                 let _ =
                     work_task_service::set_cleanup_state(&self.db.conn, task_id, false, None).await;
+                return true;
             }
-            return;
+            return false;
         };
         // Precondition: no live connection of ours on this task. `index` alone
         // cannot answer that — it is a correlation table, not a liveness one,
@@ -4323,7 +4374,7 @@ impl TaskEngine {
                 Some("task still has a live agent connection".to_string()),
             )
             .await;
-            return;
+            return true;
         }
 
         let root = match get_folder_core(&self.db, task.folder_id).await {
@@ -4336,7 +4387,7 @@ impl TaskEngine {
                     Some(e.to_string()),
                 )
                 .await;
-                return;
+                return true;
             }
         };
         let Ok(wt) = get_folder_core(&self.db, wt_id).await else {
@@ -4345,7 +4396,7 @@ impl TaskEngine {
             // otherwise keep rendering a worktree no refetch would return.
             let _ = work_task_service::clear_worktree(&self.db.conn, task_id).await;
             emit_folder_deleted(&self.emitter, wt_id);
-            return;
+            return true;
         };
 
         if let Err(e) = task_git::remove_worktree_and_branch(
@@ -4362,7 +4413,7 @@ impl TaskEngine {
                 Some(e.to_string()),
             )
             .await;
-            return;
+            return true;
         }
 
         converge_worktree_removal(
@@ -4374,6 +4425,7 @@ impl TaskEngine {
             &wt.path,
         )
         .await;
+        true
     }
 
     // ── reconcile ───────────────────────────────────────────────────────────
@@ -4967,6 +5019,7 @@ async fn compose_prompt(
             work_branch,
             strategy,
             message,
+            instructions,
         } => {
             if !resumed {
                 blocks.push(PromptInputBlock::Text {
@@ -4987,11 +5040,22 @@ async fn compose_prompt(
                      git -C \"{root_path}\" commit -m \"<message>\""
                 )
             };
+            // Indented under step 3 rather than left dangling after it: it says
+            // what to substitute for that step's `<message>`, and read as a
+            // fourth line it looked like a fourth instruction.
             let message_rule = match message {
-                Some(m) => format!("Use exactly this commit message:\n{m}"),
-                None => "Write a concise Conventional Commits message yourself, \
-                         summarizing what this task changed."
+                Some(m) => format!("   Use exactly this commit message:\n   {m}"),
+                None => "   For `<message>`, write a concise Conventional Commits \
+                         message yourself, summarizing what this task changed."
                     .to_string(),
+            };
+            // The user's own words get their own paragraph, before the closing
+            // rules — those rules stay last on purpose (same reason the standing
+            // worktree guard below is the last built-in block): whatever the
+            // user asked for, it does not license a push or a self-deletion.
+            let extra = match instructions {
+                Some(i) => format!("\nAlso follow these instructions from the user:\n{i}\n"),
+                None => String::new(),
             };
             blocks.push(PromptInputBlock::Text {
                 text: format!(
@@ -5004,9 +5068,11 @@ async fn compose_prompt(
                      merge commit.\n\
                      3. Land onto the base checkout at `{root_path}`:\n   {land_command}\n\
                      {message_rule}\n\
+                     {extra}\n\
                      Do NOT push, do NOT delete this worktree or its branch, and do not \
-                     change anything else on the base branch. Finish with one short line \
-                     saying what landed."
+                     change anything else on the base branch — leave the checkout at \
+                     `{root_path}` on `{base_branch}`, never switch branches there. \
+                     Finish with one short line saying what landed."
                 ),
             });
         }
@@ -5039,7 +5105,7 @@ async fn compose_prompt(
                  change instead of making it."
             )
         } else if original_work_order && cfg.deliverable.as_deref() == Some(DELIVERABLE_REPORT) {
-            // Report-deliverable order (forge investigate / plan / review-only):
+            // Report-deliverable order (forge plan-first / review-only):
             // the generic "commit as you like" grant would quietly undo the
             // task's own "analysis only" instruction several blocks earlier —
             // the licence must defer to the task text, not overrule it.
@@ -5913,6 +5979,7 @@ mod tests {
             serde_json::to_string(&WorkTaskQueuedMerge {
                 message: Some("feat: land it".into()),
                 delete_worktree: false,
+                instructions: None,
                 queued_at: chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap(),
             })
             .unwrap(),
@@ -6001,6 +6068,7 @@ mod tests {
         let intent = |secs: i64| WorkTaskQueuedMerge {
             message: None,
             delete_worktree: true,
+            instructions: None,
             queued_at: chrono::DateTime::from_timestamp(1_800_000_000 + secs, 0)
                 .expect("valid instant"),
         };
@@ -6103,6 +6171,7 @@ mod tests {
             work_branch: "task/7".to_string(),
             strategy: "squash".to_string(),
             message: None,
+            instructions: None,
         }
     }
 
@@ -6232,7 +6301,7 @@ mod tests {
             .any(|t| t.contains("Commit to the current branch as you like")));
     }
 
-    /// A report-deliverable task (forge investigate / plan-first / review-only)
+    /// A report-deliverable task (forge plan-first / review-only)
     /// swaps the commit licence on its ORIGINAL order — otherwise the guard's
     /// "commit as you like", being the last block read, would quietly undo the
     /// task's own "analysis only" instruction.
@@ -6959,6 +7028,78 @@ mod tests {
             .contains("Write the commit message in Chinese."));
     }
 
+    /// What the user typed in the merge dialog has to reach the agent — and has
+    /// to land BEFORE the closing rules, which are what keep "also do X" from
+    /// being read as licence to push or to delete the worktree.
+    #[tokio::test]
+    async fn merge_prompt_carries_the_users_instructions_ahead_of_the_rules() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let LaunchMode::Merge {
+            root_path,
+            base_branch,
+            work_branch,
+            strategy,
+            message,
+            ..
+        } = merge_mode()
+        else {
+            unreachable!("merge_mode is a merge")
+        };
+        let mode = LaunchMode::Merge {
+            root_path,
+            base_branch,
+            work_branch,
+            strategy,
+            message,
+            instructions: Some("Prefer this branch's side on any conflict.".to_string()),
+        };
+        let blocks = compose_prompt(
+            &task_config(),
+            &task_row(),
+            &mode,
+            &WorkTaskFolderSettings::default(),
+            true,
+            &db.conn,
+        )
+        .await
+        .expect("compose");
+
+        let recipe = &texts(&blocks)[0];
+        let said = recipe
+            .find("Prefer this branch's side on any conflict.")
+            .expect("the user's own words reach the agent");
+        let rules = recipe.find("Do NOT push").expect("the closing rules");
+        assert!(
+            said < rules,
+            "the rules must stay last — they are what an over-eager reading of \
+             the user's request would otherwise override"
+        );
+    }
+
+    /// …and an empty box adds nothing: no dangling header, no stray blank
+    /// section between the numbered steps and the rules.
+    #[tokio::test]
+    async fn merge_prompt_says_nothing_when_there_are_no_instructions() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let blocks = compose_prompt(
+            &task_config(),
+            &task_row(),
+            &merge_mode(), // `instructions: None`
+            &WorkTaskFolderSettings::default(),
+            true,
+            &db.conn,
+        )
+        .await
+        .expect("compose");
+
+        let recipe = &texts(&blocks)[0];
+        assert!(
+            !recipe.contains("instructions from the user"),
+            "no header without a body"
+        );
+        assert!(recipe.contains("land it onto the base branch"));
+    }
+
     #[tokio::test]
     async fn blank_stage_prompts_add_nothing() {
         let db = crate::db::test_helpers::fresh_in_memory_db().await;
@@ -7650,6 +7791,10 @@ mod tests {
     struct Delivery {
         engine: Arc<TaskEngine>,
         forge: Arc<FakeForge>,
+        /// Everything the engine broadcast, in order — the ordering tests read
+        /// it, and holding it also keeps the sender from reporting no
+        /// receivers for every other test on this fixture.
+        events: tokio::sync::broadcast::Receiver<crate::web::event_bridge::WebEvent>,
         task_id: i32,
         head: String,
         /// The commit the task branched from — a real commit that is NOT a
@@ -7735,9 +7880,16 @@ mod tests {
         // Default posture: the remote base is exactly where this task branched
         // from, so nothing unpushed can leak into the pull request.
         *forge.remote_base.lock().await = Some(base_sha.clone());
+        let broadcaster = Arc::new(crate::web::event_bridge::WebEventBroadcaster::new());
+        let events = broadcaster.subscribe();
         Delivery {
-            engine: test_engine_with_forge(db, forge.clone()),
+            engine: test_engine_full(
+                db,
+                forge.clone(),
+                EventEmitter::test_web_only(broadcaster),
+            ),
             forge,
+            events,
             task_id: task.id,
             head,
             base_sha,
@@ -8125,7 +8277,7 @@ mod tests {
 
         let err = f
             .engine
-            .merge_task(f.task_id, None, false, false)
+            .merge_task(f.task_id, None, false, None, false)
             .await
             .expect_err("must not dispatch");
         assert!(err.contains("already merging"), "got {err}");
@@ -8635,6 +8787,57 @@ mod tests {
         assert_eq!(task.worktree_folder_id, None, "detached");
         assert!(!f.worktree.exists(), "and really gone from disk");
         assert!(!f.engine.index.lock().await.contains_key(ZOMBIE), "retired");
+    }
+
+    /// Drain everything the fixture's engine has broadcast so far.
+    fn drained(f: &mut Delivery) -> Vec<crate::web::event_bridge::WebEvent> {
+        let mut out = Vec::new();
+        while let Ok(ev) = f.events.try_recv() {
+            out.push(ev);
+        }
+        out
+    }
+
+    /// An acceptance that removes the worktree has to say so on the TASK
+    /// channel, not just the folder one. Both acceptance paths broadcast the
+    /// row BEFORE the cleanup runs (`settle_merge_generation` and this one), so
+    /// a removal that stays silent leaves every open board holding the snapshot
+    /// taken while the worktree still existed: the card flips to `done` but its
+    /// "worktree removed" badge — keyed on `worktree_folder_id` going null —
+    /// never appears until someone refetches the whole table.
+    #[tokio::test]
+    async fn removing_the_worktree_announces_the_task_after_the_folder() {
+        let mut f = delivery_fixture(FakeForge::default()).await;
+        interrupt_merge(&f, "conn-of-a-dead-merge", true).await;
+        git_run(&f.root, &["merge", "--no-ff", "-q", "-m", "land", "task/7"]);
+        let _ = drained(&mut f); // everything up to the merge is setup noise
+
+        f.engine.recover_merging(f.task_id).await;
+
+        assert_eq!(
+            row(&f.engine, f.task_id).await.worktree_folder_id,
+            None,
+            "precondition: this run really did detach the worktree"
+        );
+        let events = drained(&mut f);
+        let folder_gone = events
+            .iter()
+            .position(|e| {
+                e.channel == crate::web::event_bridge::FOLDER_CHANGED_EVENT
+                    && e.payload["kind"] == "deleted"
+            })
+            .expect("the worktree folder drop is broadcast");
+        assert!(
+            events.iter().skip(folder_gone).any(|e| {
+                e.channel == WORK_TASK_CHANGED_EVENT
+                    && e.payload["kind"] == "upsert"
+                    && e.payload["id"] == f.task_id
+            }),
+            "the task must be re-announced AFTER the detach — an upsert from \
+             before it carries the worktree the client is being told to drop; \
+             saw {:?}",
+            events.iter().map(|e| &e.channel).collect::<Vec<_>>()
+        );
     }
 
     /// A task nobody triggered from a forge has no thread to comment on — the
@@ -9200,7 +9403,7 @@ mod tests {
         as_pull_request_task(&f, open_pull("x", "feature", "acme/app")).await;
         let err = f
             .engine
-            .merge_task(f.task_id, None, false, false)
+            .merge_task(f.task_id, None, false, None, false)
             .await
             .expect_err("must refuse");
         assert!(err.contains("deliver it back"), "{err}");

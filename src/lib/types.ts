@@ -1562,11 +1562,14 @@ export interface ForgeTaskLink {
 
 /** How the trigger dialog asks the work item to be handled. A template NAME
  *  the server resolves into its own instruction text — prompt text never
- *  crosses the wire. `fix`/`investigate`/`plan_first` are issue scenarios,
- *  `review_fix`/`review_only` are PR/MR scenarios. */
+ *  crosses the wire. `fix`/`plan_first` are issue scenarios,
+ *  `review_fix`/`review_only` are PR/MR scenarios.
+ *
+ *  Both issue templates confirm the reported problem is real before acting on
+ *  it, which is why there is no "investigate only" entry: the server refuses
+ *  that retired name rather than mapping it onto one of these. */
 export type ForgeScenarioId =
   | "fix"
-  | "investigate"
   | "plan_first"
   | "review_fix"
   | "review_only"
@@ -1654,6 +1657,9 @@ export interface WorkTaskQueuedMerge {
   /** The commit message the user typed; null = the agent writes it. */
   message: string | null
   delete_worktree: boolean
+  /** Extra directions for the merge agent, kept so a merge that waited its turn
+   *  lands under what the user asked for when they queued it. */
+  instructions?: string | null
   /** Place in line (ISO instant) — the order the engine's pump dispatches in. */
   queued_at: string
 }
