@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "窗口缩放",
-      "sectionDescription": "整体放大或缩小界面，立即生效，按设备分别保存。",
+      "sectionDescription": "整体放大或缩小界面，立即生效，按设备分别保存。⌘/Ctrl + 和 - 按与此菜单相同的档位调节（⌘/Ctrl 0 恢复为 100%）。",
       "placeholder": "请选择缩放档位",
       "default": "默认",
       "current": "当前缩放：{zoom}%"
@@ -359,6 +359,7 @@
     "resetDefault": "恢复默认",
     "recordInstruction": "点击右侧按钮后按下组合键即可修改。建议使用 Ctrl/Cmd、Alt、Shift 的组合。按 Esc 可取消录制。",
     "recording": "按下快捷键...",
+    "unassigned": "未分配",
     "toasts": {
       "conflict": "快捷键已被「{title}」占用",
       "updated": "快捷键已更新",
@@ -429,6 +430,18 @@
       "toggle_custom_style": {
         "title": "停用/恢复自定义样式",
         "description": "逃生舱：一键关闭全部自定义配色与 CSS，再按一次恢复"
+      },
+      "zoom_in": {
+        "title": "放大",
+        "description": "把窗口缩放提高一档"
+      },
+      "zoom_out": {
+        "title": "缩小",
+        "description": "把窗口缩放降低一档"
+      },
+      "zoom_reset": {
+        "title": "重置缩放",
+        "description": "把窗口缩放恢复为 100%"
       }
     }
   },
@@ -869,6 +882,9 @@
       "enableWebsocketAria": "Codex Provider 启用 WebSocket",
       "enableSkills": "启用 Skills",
       "enableSkillsAria": "Codex 启用 Skills",
+      "enableDefaultModeRequestUserInput": "默认模式下允许提问",
+      "enableDefaultModeRequestUserInputAria": "允许 Codex 在默认模式下提问",
+      "enableDefaultModeRequestUserInputHint": "Codex 的 request_user_input 工具默认只在 Plan 模式可用。开启后，普通回合也能向你提问。会写入 ~/.codex/config.toml 的 [features].default_mode_request_user_input；该开关在上游仍处于开发中。下次新建会话生效。",
       "enableFast": "启用 Fast",
       "enableFastAria": "Codex 启用 Fast 服务等级",
       "sandboxGroupTitle": "沙箱与审批",
@@ -3012,6 +3028,9 @@
         "selectionCopied": "已复制",
         "selectionCopyFailed": "复制失败",
         "selectionQuote": "引用",
+        "selectionAsk": "提问",
+        "selectionAskPlaceholder": "针对选中内容提问…",
+        "selectionAskSubmit": "在新建会话中提问",
         "downloadImage": "下载图片",
         "copyImage": "复制图片",
         "copiedImage": "已复制图片",
@@ -3462,7 +3481,11 @@
       "hunkLabel": "代码块 {index}",
       "loadingHunk": "正在加载代码块...",
       "noDiffData": "无差异数据",
-      "showRemainingLines": "显示剩余 {count} 行"
+      "showRemainingLines": "显示剩余 {count} 行",
+      "viewMode": {
+        "split": "切换为左右分栏视图",
+        "unified": "切换为内联视图"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "工作文件夹",
@@ -4753,6 +4776,8 @@
     "detailDescription": "任务详情",
     "detailSummary": "结果",
     "detailFiles": "变更文件",
+    "detailFilesIncludesPr": "含 PR 自身的改动",
+    "detailFilesIncludesMr": "含 MR 自身的改动",
     "detailDiffAll": "查看全部差异",
     "detailDiffAllTitle": "全部差异",
     "detailNoChanges": "相对基准还没有变更",
@@ -4803,6 +4828,7 @@
     "deliverPrTitleLabel": "PR 标题",
     "deliverPrTitleLabelMr": "合并请求标题",
     "deliverPrDraft": "创建为草稿",
+    "deliverPrDeleteWorktree": "交付后删除 worktree",
     "deliverPrSubmit": "推送并创建",
     "deliverPrSubmitting": "推送中…",
     "deliverPrDone": "PR 已创建",
@@ -4812,6 +4838,7 @@
     "deliverPrBackTitleMr": "推回该合并请求",
     "deliverPrBackDescription": "把这个任务的提交推到 {repo}#{number} 的头分支 {branch}。不会新建任何东西——工作直接进入已经存在的那个评审。",
     "deliverPrBackDescriptionMr": "把这个任务的提交推到 {repo}!{number} 的源分支 {branch}。不会新建任何东西——工作直接进入已经存在的那个评审。",
+    "deliverPrBackDeleteWorktree": "推回后删除 worktree",
     "deliverPrBackSubmit": "推送",
     "deliverPrBackDone": "已推回 PR",
     "deliverPrBackDoneMr": "已推回合并请求"

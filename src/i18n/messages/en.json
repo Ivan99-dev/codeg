@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "Window zoom",
-      "sectionDescription": "Scale the entire interface. Applies immediately and persists per device.",
+      "sectionDescription": "Scale the entire interface. Applies immediately and persists per device. ⌘/Ctrl + and - move through the same zoom levels as this menu (⌘/Ctrl 0 resets to 100%).",
       "placeholder": "Select zoom level",
       "default": "Default",
       "current": "Current zoom: {zoom}%"
@@ -359,6 +359,7 @@
     "resetDefault": "Reset defaults",
     "recordInstruction": "Click the right-side button, then press a key combination. Use Ctrl/Cmd, Alt, and Shift. Press Esc to cancel recording.",
     "recording": "Press shortcut...",
+    "unassigned": "Unassigned",
     "toasts": {
       "conflict": "Shortcut is already used by \"{title}\"",
       "updated": "Shortcut updated",
@@ -429,6 +430,18 @@
       "toggle_custom_style": {
         "title": "Suspend/resume custom style",
         "description": "Escape hatch: turns all custom colors and CSS off, and back on"
+      },
+      "zoom_in": {
+        "title": "Zoom in",
+        "description": "Make the window one step larger"
+      },
+      "zoom_out": {
+        "title": "Zoom out",
+        "description": "Make the window one step smaller"
+      },
+      "zoom_reset": {
+        "title": "Reset zoom",
+        "description": "Set the window zoom back to 100%"
       }
     }
   },
@@ -869,6 +882,9 @@
       "enableWebsocketAria": "Enable WebSocket for Codex Provider",
       "enableSkills": "Enable Skills",
       "enableSkillsAria": "Enable Skills for Codex",
+      "enableDefaultModeRequestUserInput": "Allow questions in Default mode",
+      "enableDefaultModeRequestUserInputAria": "Allow Codex to ask questions in Default mode",
+      "enableDefaultModeRequestUserInputHint": "Codex may only call its request_user_input tool in Plan mode. Turn this on to let it ask you questions in ordinary turns too. Writes [features].default_mode_request_user_input to ~/.codex/config.toml; the flag is still under development upstream. Takes effect on the next session.",
       "enableFast": "Enable Fast",
       "enableFastAria": "Enable Fast service tier for Codex",
       "sandboxGroupTitle": "Sandbox & approvals",
@@ -3012,6 +3028,9 @@
         "selectionCopied": "Copied",
         "selectionCopyFailed": "Copy failed",
         "selectionQuote": "Quote",
+        "selectionAsk": "Ask",
+        "selectionAskPlaceholder": "Ask about this selection…",
+        "selectionAskSubmit": "Ask in a new conversation",
         "downloadImage": "Download image",
         "copyImage": "Copy image",
         "copiedImage": "Image copied",
@@ -3462,7 +3481,11 @@
       "hunkLabel": "Hunk {index}",
       "loadingHunk": "Loading hunk...",
       "noDiffData": "No diff data",
-      "showRemainingLines": "Show {count} more lines"
+      "showRemainingLines": "Show {count} more lines",
+      "viewMode": {
+        "split": "Switch to side-by-side view",
+        "unified": "Switch to inline view"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "Working folder",
@@ -4753,6 +4776,8 @@
     "detailDescription": "Task detail",
     "detailSummary": "Result",
     "detailFiles": "Changed files",
+    "detailFilesIncludesPr": "incl. the pull request's own changes",
+    "detailFilesIncludesMr": "incl. the merge request's own changes",
     "detailDiffAll": "View full diff",
     "detailDiffAllTitle": "Full diff",
     "detailNoChanges": "No changes vs the base yet",
@@ -4803,6 +4828,7 @@
     "deliverPrTitleLabel": "Pull request title",
     "deliverPrTitleLabelMr": "Merge request title",
     "deliverPrDraft": "Open as a draft",
+    "deliverPrDeleteWorktree": "Delete the worktree after delivering",
     "deliverPrSubmit": "Push and open",
     "deliverPrSubmitting": "Pushing…",
     "deliverPrDone": "Pull request opened",
@@ -4812,6 +4838,7 @@
     "deliverPrBackTitleMr": "Deliver back to the merge request",
     "deliverPrBackDescription": "Pushes this task's commits onto {branch}, the head branch of {repo}#{number}. Nothing new is opened — the review that is already there receives the work.",
     "deliverPrBackDescriptionMr": "Pushes this task's commits onto {branch}, the source branch of {repo}!{number}. Nothing new is opened — the review that is already there receives the work.",
+    "deliverPrBackDeleteWorktree": "Delete the worktree after pushing",
     "deliverPrBackSubmit": "Push",
     "deliverPrBackDone": "Pushed to the pull request",
     "deliverPrBackDoneMr": "Pushed to the merge request"

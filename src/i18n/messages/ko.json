@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "창 확대/축소",
-      "sectionDescription": "전체 인터페이스를 확대하거나 축소합니다. 즉시 적용되며 장치별로 저장됩니다.",
+      "sectionDescription": "전체 인터페이스를 확대하거나 축소합니다. 즉시 적용되며 장치별로 저장됩니다. ⌘/Ctrl +와 -는 이 메뉴와 같은 단계로 확대/축소합니다(⌘/Ctrl 0은 100%로 되돌립니다).",
       "placeholder": "확대/축소 단계 선택",
       "default": "기본값",
       "current": "현재 확대/축소: {zoom}%"
@@ -359,6 +359,7 @@
     "resetDefault": "기본값으로 재설정",
     "recordInstruction": "오른쪽 버튼을 클릭한 다음 키 조합을 누르세요. Ctrl/Cmd, Alt, Shift를 사용할 수 있습니다. Esc를 누르면 기록을 취소합니다.",
     "recording": "단축키 입력...",
+    "unassigned": "할당 안 됨",
     "toasts": {
       "conflict": "단축키가 이미 \"{title}\"에서 사용 중입니다",
       "updated": "단축키가 업데이트되었습니다",
@@ -429,6 +430,18 @@
       "toggle_custom_style": {
         "title": "사용자 지정 스타일 중지/재개",
         "description": "비상 탈출구: 모든 사용자 지정 색상과 CSS를 끄고, 다시 누르면 되돌립니다"
+      },
+      "zoom_in": {
+        "title": "확대",
+        "description": "창을 한 단계 더 크게 만듭니다"
+      },
+      "zoom_out": {
+        "title": "축소",
+        "description": "창을 한 단계 더 작게 만듭니다"
+      },
+      "zoom_reset": {
+        "title": "확대/축소 초기화",
+        "description": "창 확대/축소를 100%로 되돌립니다"
       }
     }
   },
@@ -869,6 +882,9 @@
       "enableWebsocketAria": "Codex Provider용 WebSocket 활성화",
       "enableSkills": "Skills 활성화",
       "enableSkillsAria": "Codex용 Skills 활성화",
+      "enableDefaultModeRequestUserInput": "기본 모드에서 질문 허용",
+      "enableDefaultModeRequestUserInputAria": "기본 모드에서 Codex가 질문하도록 허용",
+      "enableDefaultModeRequestUserInputHint": "Codex의 request_user_input 도구는 기본적으로 Plan 모드에서만 사용할 수 있습니다. 켜면 일반 턴에서도 질문할 수 있습니다. ~/.codex/config.toml의 [features].default_mode_request_user_input에 기록되며, 이 플래그는 업스트림에서 아직 개발 중입니다. 다음 세션부터 적용됩니다.",
       "enableFast": "Fast 활성화",
       "enableFastAria": "Codex용 Fast 서비스 계층 활성화",
       "sandboxGroupTitle": "샌드박스 및 승인",
@@ -3012,6 +3028,9 @@
         "selectionCopied": "복사됨",
         "selectionCopyFailed": "복사 실패",
         "selectionQuote": "인용",
+        "selectionAsk": "질문",
+        "selectionAskPlaceholder": "선택 영역에 대해 질문…",
+        "selectionAskSubmit": "새 대화에서 질문하기",
         "downloadImage": "이미지 다운로드",
         "copyImage": "이미지 복사",
         "copiedImage": "이미지를 복사했습니다",
@@ -3462,7 +3481,11 @@
       "hunkLabel": "청크 {index}",
       "loadingHunk": "Hunk 로딩 중...",
       "noDiffData": "Diff 데이터 없음",
-      "showRemainingLines": "나머지 {count}줄 표시"
+      "showRemainingLines": "나머지 {count}줄 표시",
+      "viewMode": {
+        "split": "나란히 보기로 전환",
+        "unified": "인라인 보기로 전환"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "작업 폴더",
@@ -4753,6 +4776,8 @@
     "detailDescription": "작업 상세",
     "detailSummary": "결과",
     "detailFiles": "변경된 파일",
+    "detailFilesIncludesPr": "PR 자체의 변경 포함",
+    "detailFilesIncludesMr": "MR 자체의 변경 포함",
     "detailDiffAll": "전체 차이 보기",
     "detailDiffAllTitle": "전체 차이",
     "detailNoChanges": "기준 대비 변경 사항이 아직 없습니다",
@@ -4803,6 +4828,7 @@
     "deliverPrTitleLabel": "풀 리퀘스트 제목",
     "deliverPrTitleLabelMr": "병합 요청 제목",
     "deliverPrDraft": "초안으로 만들기",
+    "deliverPrDeleteWorktree": "전달 후 worktree 삭제",
     "deliverPrSubmit": "푸시하고 만들기",
     "deliverPrSubmitting": "푸시 중…",
     "deliverPrDone": "풀 리퀘스트를 만들었습니다",
@@ -4812,6 +4838,7 @@
     "deliverPrBackTitleMr": "병합 요청으로 되돌려 보내기",
     "deliverPrBackDescription": "이 작업의 커밋을 {repo}#{number}의 헤드 브랜치 {branch}에 푸시합니다. 새로 만드는 것은 없고, 이미 열려 있는 리뷰에 그대로 반영됩니다.",
     "deliverPrBackDescriptionMr": "이 작업의 커밋을 {repo}!{number}의 소스 브랜치 {branch}에 푸시합니다. 새로 만드는 것은 없고, 이미 열려 있는 리뷰에 그대로 반영됩니다.",
+    "deliverPrBackDeleteWorktree": "푸시 후 worktree 삭제",
     "deliverPrBackSubmit": "푸시",
     "deliverPrBackDone": "풀 리퀘스트에 푸시했습니다",
     "deliverPrBackDoneMr": "병합 요청에 푸시했습니다"

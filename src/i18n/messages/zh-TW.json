@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "視窗縮放",
-      "sectionDescription": "整體放大或縮小介面，立即生效，依裝置分別儲存。",
+      "sectionDescription": "整體放大或縮小介面，立即生效，依裝置分別儲存。⌘/Ctrl + 和 - 依與此選單相同的檔位調節（⌘/Ctrl 0 恢復為 100%）。",
       "placeholder": "請選擇縮放檔位",
       "default": "預設",
       "current": "目前縮放：{zoom}%"
@@ -359,6 +359,7 @@
     "resetDefault": "恢復預設",
     "recordInstruction": "點擊右側按鈕後按下組合鍵即可修改。建議使用 Ctrl/Cmd、Alt、Shift 的組合。按 Esc 可取消錄製。",
     "recording": "按下快捷鍵...",
+    "unassigned": "未指派",
     "toasts": {
       "conflict": "快捷鍵已被「{title}」占用",
       "updated": "快捷鍵已更新",
@@ -429,6 +430,18 @@
       "toggle_custom_style": {
         "title": "停用/恢復自訂樣式",
         "description": "逃生艙：一鍵關閉全部自訂配色與 CSS，再按一次恢復"
+      },
+      "zoom_in": {
+        "title": "放大",
+        "description": "把視窗縮放提高一檔"
+      },
+      "zoom_out": {
+        "title": "縮小",
+        "description": "把視窗縮放降低一檔"
+      },
+      "zoom_reset": {
+        "title": "重設縮放",
+        "description": "把視窗縮放恢復為 100%"
       }
     }
   },
@@ -869,6 +882,9 @@
       "enableWebsocketAria": "Codex Provider 啟用 WebSocket",
       "enableSkills": "啟用 Skills",
       "enableSkillsAria": "Codex 啟用 Skills",
+      "enableDefaultModeRequestUserInput": "預設模式下允許提問",
+      "enableDefaultModeRequestUserInputAria": "允許 Codex 在預設模式下提問",
+      "enableDefaultModeRequestUserInputHint": "Codex 的 request_user_input 工具預設只在 Plan 模式可用。開啟後，一般回合也能向你提問。會寫入 ~/.codex/config.toml 的 [features].default_mode_request_user_input；該開關在上游仍處於開發中。下次新建工作階段生效。",
       "enableFast": "啟用 Fast",
       "enableFastAria": "Codex 啟用 Fast 服務等級",
       "sandboxGroupTitle": "沙箱與審批",
@@ -3012,6 +3028,9 @@
         "selectionCopied": "已複製",
         "selectionCopyFailed": "複製失敗",
         "selectionQuote": "引用",
+        "selectionAsk": "提問",
+        "selectionAskPlaceholder": "針對選取內容提問…",
+        "selectionAskSubmit": "在新建會話中提問",
         "downloadImage": "下載圖片",
         "copyImage": "複製圖片",
         "copiedImage": "已複製圖片",
@@ -3462,7 +3481,11 @@
       "hunkLabel": "區塊 {index}",
       "loadingHunk": "正在載入區塊...",
       "noDiffData": "無差異資料",
-      "showRemainingLines": "顯示剩餘 {count} 行"
+      "showRemainingLines": "顯示剩餘 {count} 行",
+      "viewMode": {
+        "split": "切換為左右分欄視圖",
+        "unified": "切換為內聯視圖"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "工作資料夾",
@@ -4753,6 +4776,8 @@
     "detailDescription": "任務詳情",
     "detailSummary": "結果",
     "detailFiles": "變更檔案",
+    "detailFilesIncludesPr": "含 PR 自身的變更",
+    "detailFilesIncludesMr": "含 MR 自身的變更",
     "detailDiffAll": "檢視全部差異",
     "detailDiffAllTitle": "全部差異",
     "detailNoChanges": "相對基準還沒有變更",
@@ -4803,6 +4828,7 @@
     "deliverPrTitleLabel": "PR 標題",
     "deliverPrTitleLabelMr": "合併請求標題",
     "deliverPrDraft": "建立為草稿",
+    "deliverPrDeleteWorktree": "交付後刪除 worktree",
     "deliverPrSubmit": "推送並建立",
     "deliverPrSubmitting": "推送中…",
     "deliverPrDone": "PR 已建立",
@@ -4812,6 +4838,7 @@
     "deliverPrBackTitleMr": "推回該合併請求",
     "deliverPrBackDescription": "把這個任務的提交推到 {repo}#{number} 的頭分支 {branch}。不會新建任何東西——工作直接進入已經存在的那個審查。",
     "deliverPrBackDescriptionMr": "把這個任務的提交推到 {repo}!{number} 的來源分支 {branch}。不會新建任何東西——工作直接進入已經存在的那個審查。",
+    "deliverPrBackDeleteWorktree": "推回後刪除 worktree",
     "deliverPrBackSubmit": "推送",
     "deliverPrBackDone": "已推回 PR",
     "deliverPrBackDoneMr": "已推回合併請求"

@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "تكبير النافذة",
-      "sectionDescription": "تكبير أو تصغير الواجهة بالكامل. يتم تطبيقه فوراً ويُحفظ لكل جهاز على حدة.",
+      "sectionDescription": "تكبير أو تصغير الواجهة بالكامل. يتم تطبيقه فوراً ويُحفظ لكل جهاز على حدة. ⌘/Ctrl + و - ينتقلان بين نفس مستويات التكبير في هذه القائمة (⌘/Ctrl 0 يعيد الضبط إلى 100%).",
       "placeholder": "اختر مستوى التكبير",
       "default": "افتراضي",
       "current": "التكبير الحالي: {zoom}%"
@@ -359,6 +359,7 @@
     "resetDefault": "استعادة الإعدادات الافتراضية",
     "recordInstruction": "انقر الزر في الجهة اليمنى ثم اضغط تركيبة مفاتيح. استخدم Ctrl/Cmd وAlt وShift. اضغط Esc لإلغاء التسجيل.",
     "recording": "اضغط اختصارًا...",
+    "unassigned": "غير معيَّن",
     "toasts": {
       "conflict": "الاختصار مستخدم بالفعل بواسطة \"{title}\"",
       "updated": "تم تحديث الاختصار",
@@ -429,6 +430,18 @@
       "toggle_custom_style": {
         "title": "إيقاف/استئناف النمط المخصص",
         "description": "مخرج طوارئ: يوقف كل الألوان المخصصة وCSS، ويعيد تفعيلها"
+      },
+      "zoom_in": {
+        "title": "تكبير",
+        "description": "اجعل النافذة أكبر بدرجة واحدة"
+      },
+      "zoom_out": {
+        "title": "تصغير",
+        "description": "اجعل النافذة أصغر بدرجة واحدة"
+      },
+      "zoom_reset": {
+        "title": "إعادة ضبط التكبير",
+        "description": "أعد تكبير النافذة إلى 100%"
       }
     }
   },
@@ -869,6 +882,9 @@
       "enableWebsocketAria": "تفعيل WebSocket لـ Codex Provider",
       "enableSkills": "تفعيل Skills",
       "enableSkillsAria": "تفعيل Skills لـ Codex",
+      "enableDefaultModeRequestUserInput": "السماح بالأسئلة في وضع Default",
+      "enableDefaultModeRequestUserInputAria": "السماح لـ Codex بطرح الأسئلة في وضع Default",
+      "enableDefaultModeRequestUserInputHint": "لا يستطيع Codex استدعاء أداة request_user_input إلا في وضع Plan. فعّل هذا الخيار ليتمكن من سؤالك في الجولات العادية أيضًا. يُكتب [features].default_mode_request_user_input في ~/.codex/config.toml، وما زال هذا الخيار قيد التطوير في المشروع الأصلي. يسري ابتداءً من الجلسة التالية.",
       "enableFast": "تفعيل Fast",
       "enableFastAria": "تفعيل مستوى خدمة Fast لـ Codex",
       "sandboxGroupTitle": "بيئة العزل والموافقات",
@@ -3012,6 +3028,9 @@
         "selectionCopied": "تم النسخ",
         "selectionCopyFailed": "فشل النسخ",
         "selectionQuote": "اقتباس",
+        "selectionAsk": "اسأل",
+        "selectionAskPlaceholder": "اسأل عن هذا التحديد…",
+        "selectionAskSubmit": "اطرح سؤالاً في محادثة جديدة",
         "downloadImage": "تنزيل الصورة",
         "copyImage": "نسخ الصورة",
         "copiedImage": "تم نسخ الصورة",
@@ -3462,7 +3481,11 @@
       "hunkLabel": "مقطع {index}",
       "loadingHunk": "جارٍ تحميل hunk...",
       "noDiffData": "لا توجد بيانات diff",
-      "showRemainingLines": "عرض {count} سطر إضافي"
+      "showRemainingLines": "عرض {count} سطر إضافي",
+      "viewMode": {
+        "split": "التبديل إلى العرض جنباً إلى جنب",
+        "unified": "التبديل إلى العرض المضمّن"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "مجلد العمل",
@@ -4753,6 +4776,8 @@
     "detailDescription": "تفاصيل المهمة",
     "detailSummary": "النتيجة",
     "detailFiles": "الملفات المتغيرة",
+    "detailFilesIncludesPr": "يشمل تغييرات طلب السحب نفسه",
+    "detailFilesIncludesMr": "يشمل تغييرات طلب الدمج نفسه",
     "detailDiffAll": "عرض كامل الفروق",
     "detailDiffAllTitle": "كامل الفروق",
     "detailNoChanges": "لا تغييرات بعد مقارنةً بالأساس",
@@ -4803,6 +4828,7 @@
     "deliverPrTitleLabel": "عنوان طلب السحب",
     "deliverPrTitleLabelMr": "عنوان طلب الدمج",
     "deliverPrDraft": "الفتح كمسودة",
+    "deliverPrDeleteWorktree": "حذف worktree بعد التسليم",
     "deliverPrSubmit": "الدفع والفتح",
     "deliverPrSubmitting": "جارٍ الدفع…",
     "deliverPrDone": "تم فتح طلب السحب",
@@ -4812,6 +4838,7 @@
     "deliverPrBackTitleMr": "الإعادة إلى طلب الدمج",
     "deliverPrBackDescription": "يدفع إيداعات هذه المهمة إلى {branch}، فرع رأس {repo}#{number}. لا يُفتح شيء جديد — المراجعة القائمة هي التي تستلم العمل.",
     "deliverPrBackDescriptionMr": "يدفع إيداعات هذه المهمة إلى {branch}، الفرع المصدر لـ {repo}!{number}. لا يُفتح شيء جديد — المراجعة القائمة هي التي تستلم العمل.",
+    "deliverPrBackDeleteWorktree": "حذف worktree بعد الدفع",
     "deliverPrBackSubmit": "ادفع",
     "deliverPrBackDone": "تم الدفع إلى طلب السحب",
     "deliverPrBackDoneMr": "تم الدفع إلى طلب الدمج"

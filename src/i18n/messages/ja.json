@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "ウィンドウズーム",
-      "sectionDescription": "インターフェイス全体を拡大・縮小します。すぐに反映され、デバイスごとに保存されます。",
+      "sectionDescription": "インターフェイス全体を拡大・縮小します。すぐに反映され、デバイスごとに保存されます。⌘/Ctrl + と - で、このメニューと同じ段階で拡大縮小します（⌘/Ctrl 0 で 100% に戻します）。",
       "placeholder": "ズームレベルを選択",
       "default": "デフォルト",
       "current": "現在のズーム：{zoom}%"
@@ -359,6 +359,7 @@
     "resetDefault": "デフォルトに戻す",
     "recordInstruction": "右側のボタンをクリックしてからキーの組み合わせを押してください。Ctrl/Cmd、Alt、Shift が使用できます。Esc で記録をキャンセルします。",
     "recording": "ショートカットを入力...",
+    "unassigned": "未割り当て",
     "toasts": {
       "conflict": "ショートカットはすでに「{title}」で使用されています",
       "updated": "ショートカットを更新しました",
@@ -429,6 +430,18 @@
       "toggle_custom_style": {
         "title": "カスタムスタイルの停止/再開",
         "description": "緊急脱出用: カスタム配色と CSS をすべてオフにし、再度押すと元に戻します"
+      },
+      "zoom_in": {
+        "title": "拡大",
+        "description": "ウィンドウの表示倍率を一段階上げます"
+      },
+      "zoom_out": {
+        "title": "縮小",
+        "description": "ウィンドウの表示倍率を一段階下げます"
+      },
+      "zoom_reset": {
+        "title": "ズームをリセット",
+        "description": "ウィンドウのズームを 100% に戻します"
       }
     }
   },
@@ -869,6 +882,9 @@
       "enableWebsocketAria": "Codex Provider の WebSocket を有効化",
       "enableSkills": "Skills を有効化",
       "enableSkillsAria": "Codex の Skills を有効化",
+      "enableDefaultModeRequestUserInput": "デフォルトモードでの質問を許可",
+      "enableDefaultModeRequestUserInputAria": "デフォルトモードで Codex が質問できるようにする",
+      "enableDefaultModeRequestUserInputHint": "Codex の request_user_input ツールは既定では Plan モードでしか使えません。有効にすると通常のターンでも質問できるようになります。~/.codex/config.toml の [features].default_mode_request_user_input に書き込まれます。このフラグは上流ではまだ開発中です。次のセッションから反映されます。",
       "enableFast": "Fast を有効化",
       "enableFastAria": "Codex の Fast サービスティアを有効化",
       "sandboxGroupTitle": "サンドボックスと承認",
@@ -3012,6 +3028,9 @@
         "selectionCopied": "コピーしました",
         "selectionCopyFailed": "コピーに失敗しました",
         "selectionQuote": "引用",
+        "selectionAsk": "質問",
+        "selectionAskPlaceholder": "選択範囲について質問…",
+        "selectionAskSubmit": "新規会話で質問する",
         "downloadImage": "画像をダウンロード",
         "copyImage": "画像をコピー",
         "copiedImage": "画像をコピーしました",
@@ -3462,7 +3481,11 @@
       "hunkLabel": "ハンク {index}",
       "loadingHunk": "Hunk を読み込み中...",
       "noDiffData": "Diff データがありません",
-      "showRemainingLines": "残り {count} 行を表示"
+      "showRemainingLines": "残り {count} 行を表示",
+      "viewMode": {
+        "split": "左右分割ビューに切り替え",
+        "unified": "インラインビューに切り替え"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "作業フォルダ",
@@ -4753,6 +4776,8 @@
     "detailDescription": "タスク詳細",
     "detailSummary": "結果",
     "detailFiles": "変更ファイル",
+    "detailFilesIncludesPr": "PR 自体の変更を含む",
+    "detailFilesIncludesMr": "MR 自体の変更を含む",
     "detailDiffAll": "差分をすべて表示",
     "detailDiffAllTitle": "全差分",
     "detailNoChanges": "ベースからの変更はまだありません",
@@ -4803,6 +4828,7 @@
     "deliverPrTitleLabel": "プルリクエストのタイトル",
     "deliverPrTitleLabelMr": "マージリクエストのタイトル",
     "deliverPrDraft": "ドラフトとして作成",
+    "deliverPrDeleteWorktree": "デリバリー後に worktree を削除",
     "deliverPrSubmit": "プッシュして作成",
     "deliverPrSubmitting": "プッシュ中…",
     "deliverPrDone": "プルリクエストを作成しました",
@@ -4812,6 +4838,7 @@
     "deliverPrBackTitleMr": "マージリクエストに戻す",
     "deliverPrBackDescription": "このタスクのコミットを {repo}#{number} のヘッドブランチ {branch} に push します。新しく作るものはありません。既にあるレビューにそのまま反映されます。",
     "deliverPrBackDescriptionMr": "このタスクのコミットを {repo}!{number} のソースブランチ {branch} に push します。新しく作るものはありません。既にあるレビューにそのまま反映されます。",
+    "deliverPrBackDeleteWorktree": "プッシュ後に worktree を削除",
     "deliverPrBackSubmit": "push",
     "deliverPrBackDone": "プルリクエストに push しました",
     "deliverPrBackDoneMr": "マージリクエストに push しました"

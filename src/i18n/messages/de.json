@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "Fensterzoom",
-      "sectionDescription": "Skaliert die gesamte Oberfläche. Wird sofort übernommen und pro Gerät gespeichert.",
+      "sectionDescription": "Skaliert die gesamte Oberfläche. Wird sofort übernommen und pro Gerät gespeichert. ⌘/Ctrl + und - durchlaufen dieselben Zoomstufen wie dieses Menü (⌘/Ctrl 0 setzt auf 100% zurück).",
       "placeholder": "Zoomstufe wählen",
       "default": "Standard",
       "current": "Aktueller Zoom: {zoom}%"
@@ -359,6 +359,7 @@
     "resetDefault": "Standardwerte zurücksetzen",
     "recordInstruction": "Klicke auf die rechte Schaltfläche und drücke dann eine Tastenkombination. Verwende Ctrl/Cmd, Alt und Shift. Drücke Esc, um die Aufzeichnung abzubrechen.",
     "recording": "Kurzbefehl drücken...",
+    "unassigned": "Nicht zugewiesen",
     "toasts": {
       "conflict": "Der Kurzbefehl wird bereits von \"{title}\" verwendet",
       "updated": "Kurzbefehl aktualisiert",
@@ -429,6 +430,18 @@
       "toggle_custom_style": {
         "title": "Eigenen Stil aussetzen/fortsetzen",
         "description": "Notausstieg: schaltet alle eigenen Farben und CSS aus und wieder ein"
+      },
+      "zoom_in": {
+        "title": "Vergrößern",
+        "description": "Das Fenster eine Stufe größer machen"
+      },
+      "zoom_out": {
+        "title": "Verkleinern",
+        "description": "Das Fenster eine Stufe kleiner machen"
+      },
+      "zoom_reset": {
+        "title": "Zoom zurücksetzen",
+        "description": "Fensterzoom auf 100% zurücksetzen"
       }
     }
   },
@@ -869,6 +882,9 @@
       "enableWebsocketAria": "WebSocket für Codex Provider aktivieren",
       "enableSkills": "Skills aktivieren",
       "enableSkillsAria": "Skills für Codex aktivieren",
+      "enableDefaultModeRequestUserInput": "Rückfragen im Default-Modus erlauben",
+      "enableDefaultModeRequestUserInputAria": "Codex im Default-Modus Rückfragen erlauben",
+      "enableDefaultModeRequestUserInputHint": "Codex darf sein request_user_input-Tool nur im Plan-Modus aufrufen. Aktiviere dies, damit es dich auch in normalen Turns fragen kann. Schreibt [features].default_mode_request_user_input in ~/.codex/config.toml; das Flag befindet sich upstream noch in Entwicklung. Wirkt ab der nächsten Sitzung.",
       "enableFast": "Fast aktivieren",
       "enableFastAria": "Fast-Servicestufe für Codex aktivieren",
       "sandboxGroupTitle": "Sandbox und Freigaben",
@@ -3012,6 +3028,9 @@
         "selectionCopied": "Kopiert",
         "selectionCopyFailed": "Kopieren fehlgeschlagen",
         "selectionQuote": "Zitieren",
+        "selectionAsk": "Fragen",
+        "selectionAskPlaceholder": "Frage zu dieser Auswahl…",
+        "selectionAskSubmit": "In einer neuen Konversation fragen",
         "downloadImage": "Bild herunterladen",
         "copyImage": "Bild kopieren",
         "copiedImage": "Bild kopiert",
@@ -3462,7 +3481,11 @@
       "hunkLabel": "Block {index}",
       "loadingHunk": "Hunk wird geladen...",
       "noDiffData": "Keine Diff-Daten",
-      "showRemainingLines": "{count} weitere Zeilen anzeigen"
+      "showRemainingLines": "{count} weitere Zeilen anzeigen",
+      "viewMode": {
+        "split": "Zur Zwei-Spalten-Ansicht wechseln",
+        "unified": "Zur Inline-Ansicht wechseln"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "Arbeitsordner",
@@ -4753,6 +4776,8 @@
     "detailDescription": "Aufgabendetails",
     "detailSummary": "Ergebnis",
     "detailFiles": "Geänderte Dateien",
+    "detailFilesIncludesPr": "inkl. der Änderungen des Pull Requests selbst",
+    "detailFilesIncludesMr": "inkl. der Änderungen des Merge Requests selbst",
     "detailDiffAll": "Gesamtes Diff anzeigen",
     "detailDiffAllTitle": "Gesamtes Diff",
     "detailNoChanges": "Noch keine Änderungen gegenüber der Basis",
@@ -4803,6 +4828,7 @@
     "deliverPrTitleLabel": "Titel des Pull Requests",
     "deliverPrTitleLabelMr": "Titel des Merge Requests",
     "deliverPrDraft": "Als Entwurf öffnen",
+    "deliverPrDeleteWorktree": "Worktree nach der Übergabe löschen",
     "deliverPrSubmit": "Pushen und öffnen",
     "deliverPrSubmitting": "Wird gepusht …",
     "deliverPrDone": "Pull Request geöffnet",
@@ -4812,6 +4838,7 @@
     "deliverPrBackTitleMr": "Zurück in den Merge Request liefern",
     "deliverPrBackDescription": "Pusht die Commits dieser Aufgabe auf {branch}, den Head-Branch von {repo}#{number}. Es wird nichts Neues geöffnet — die bereits laufende Review bekommt die Arbeit.",
     "deliverPrBackDescriptionMr": "Pusht die Commits dieser Aufgabe auf {branch}, den Quell-Branch von {repo}!{number}. Es wird nichts Neues geöffnet — die bereits laufende Review bekommt die Arbeit.",
+    "deliverPrBackDeleteWorktree": "Worktree nach dem Push löschen",
     "deliverPrBackSubmit": "Pushen",
     "deliverPrBackDone": "In den Pull Request gepusht",
     "deliverPrBackDoneMr": "In den Merge Request gepusht"
