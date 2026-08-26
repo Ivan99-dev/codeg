@@ -26,8 +26,6 @@ jobs:
 
       - name: Merge upstream main into fork main
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -35,6 +33,29 @@ jobs:
           git remote add upstream https://github.com/xintaofei/codeg.git
           git fetch upstream main
           git merge --no-edit upstream/main
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: "pnpm"
+
+      - name: Verify merged web build
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Publish merge and dispatch release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
           git push origin main
 
           APP_VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
@@ -54,5 +75,5 @@ jobs:
             echo "Published release ${RELEASE_TAG} already exists; skip dispatch"
           else
             echo "Dispatching Release workflow for ${RELEASE_TAG}"
-            gh workflow run release.yml --repo "${GITHUB_REPOSITORY}" --ref main -f tag="${RELEASE_TAG}"
+            gh workflow run release.yml --repo "${GITHUB_REPOSITORY}" --ref "${RELEASE_TAG}" -f tag="${RELEASE_TAG}"
           fi
