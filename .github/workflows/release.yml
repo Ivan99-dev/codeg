@@ -64,10 +64,46 @@ jobs:
           TAG_COMMIT=$(git rev-list -n 1 "${RELEASE_TAG}")
           if git merge-base --is-ancestor "${TAG_COMMIT}" "origin/${DEFAULT_BRANCH}"; then
             echo "Tag ${RELEASE_TAG} is based on ${DEFAULT_BRANCH}"
-          else
+            exit 0
+          fi
+
+          read -ra TAG_LINE <<< "$(git rev-list --parents -n 1 "${TAG_COMMIT}")"
+          if [[ "${#TAG_LINE[@]}" -ne 2 ]]; then
+            echo "Tag-only release commit must have exactly one parent"
+            exit 1
+          fi
+
+          TAG_PARENT="${TAG_LINE[1]}"
+          if ! git merge-base --is-ancestor "${TAG_PARENT}" "origin/${DEFAULT_BRANCH}"; then
             echo "Tag ${RELEASE_TAG} is not based on ${DEFAULT_BRANCH}"
             exit 1
           fi
+
+          EXPECTED_PATHS=(
+            package.json
+            src-tauri/Cargo.lock
+            src-tauri/Cargo.toml
+            src-tauri/tauri.conf.json
+          )
+          EXPECTED_FILES=$(printf '%s\n' "${EXPECTED_PATHS[@]}")
+          CHANGED_FILES=$(git diff-tree --no-commit-id --name-only -r "${TAG_COMMIT}" | sort)
+          if [[ "${CHANGED_FILES}" != "${EXPECTED_FILES}" ]]; then
+            echo "Tag-only release commit changed unexpected files:"
+            echo "${CHANGED_FILES}"
+            exit 1
+          fi
+
+          VERSION_DIFF=$(git diff --unified=0 "${TAG_PARENT}" "${TAG_COMMIT}" -- "${EXPECTED_PATHS[@]}" \
+            | grep -E '^[+-][^+-]' \
+            | grep -Ev '^[+-](  )?("version": "[^"]+",|version = "[^"]+")$' \
+            || true)
+          if [[ -n "${VERSION_DIFF}" ]]; then
+            echo "Tag-only release commit contains non-version changes:"
+            echo "${VERSION_DIFF}"
+            exit 1
+          fi
+
+          echo "Tag ${RELEASE_TAG} is a version-only child of ${DEFAULT_BRANCH}"
 
       - name: Setup Node
         uses: actions/setup-node@v4
