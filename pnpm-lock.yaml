@@ -7,6 +7,9 @@ settings:
 overrides:
   mermaid: '>=11.13.0'
 
+patchedDependencies:
+  mdast-util-gfm-autolink-literal@2.0.1: b6c92ec682456ca4b035718f71ee2b4a77d00da4c08cbc5e235e99eaabd96c45
+
 importers:
 
   .:
@@ -213,6 +216,9 @@ importers:
         specifier: ^5.0.14
         version: 5.0.14(@types/react@19.2.13)(react@19.2.4)(use-sync-external-store@1.6.0(react@19.2.4))
     devDependencies:
+      '@babel/parser':
+        specifier: ^7.29.0
+        version: 7.29.0
       '@tailwindcss/postcss':
         specifier: ^4.1.18
         version: 4.1.18
@@ -11854,7 +11860,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  mdast-util-gfm-autolink-literal@2.0.1:
+  mdast-util-gfm-autolink-literal@2.0.1(patch_hash=b6c92ec682456ca4b035718f71ee2b4a77d00da4c08cbc5e235e99eaabd96c45):
     dependencies:
       '@types/mdast': 4.0.4
       ccount: 2.0.1
@@ -11902,7 +11908,7 @@ snapshots:
   mdast-util-gfm@3.1.0:
     dependencies:
       mdast-util-from-markdown: 2.0.3
-      mdast-util-gfm-autolink-literal: 2.0.1
+      mdast-util-gfm-autolink-literal: 2.0.1(patch_hash=b6c92ec682456ca4b035718f71ee2b4a77d00da4c08cbc5e235e99eaabd96c45)
       mdast-util-gfm-footnote: 2.1.0
       mdast-util-gfm-strikethrough: 2.0.0
       mdast-util-gfm-table: 2.0.0
