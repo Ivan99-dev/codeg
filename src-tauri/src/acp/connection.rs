@@ -30,6 +30,7 @@ use sacp::{
 use sacp_tokio::AcpAgent;
 use tokio::sync::{mpsc, RwLock};
 
+use crate::acp::agent_mentions::append_agent_routes;
 use crate::acp::background_watch;
 use crate::acp::error::AcpError;
 use crate::acp::file_system_runtime::{
@@ -87,6 +88,28 @@ fn merge_agent_env(
     prepend_officecli_path(&mut merged);
 
     merged.into_iter().collect()
+}
+
+/// Whether a Cursor launch gets the root `--force` (Run Everything) flag, from
+/// the panel's `CURSOR_FORCE` knob.
+///
+/// The knob is TRI-state on purpose. It used to be written as "1" for on and
+/// *deleted* for off, which made "the user chose Ask" indistinguishable from
+/// "never configured" — and since the panel rendered the missing key as Run
+/// Everything while this function rendered it as Ask, the switch showed one
+/// thing and the session did another. Off is now written as an explicit "0",
+/// and both sides read the same rule: unset means Ask.
+///
+/// Unset resolving to Ask (not Run Everything) is deliberate. It is what every
+/// Cursor session has actually been doing all along, so no existing install
+/// silently loses its confirmation prompts; `--force` also turns cursor's own
+/// sandbox off (`approvalMode: unrestricted` → `insecure_none`), which is not
+/// something to switch on for someone who never asked.
+pub(crate) fn cursor_force_enabled(value: Option<&str>) -> bool {
+    let Some(value) = value.map(str::trim) else {
+        return false;
+    };
+    value == "1" || value.eq_ignore_ascii_case("true")
 }
 
 /// Cursor subscription-mode launch policy. When the user picked the official
@@ -1683,12 +1706,9 @@ async fn build_agent(
                 // apply, and an org policy can downgrade it to rule-based
                 // approval). Sourced from the panel's permission-mode
                 // control (env_json key CURSOR_FORCE — codeg-side knob; the
-                // CLI reads no such env var).
-                if runtime_env
-                    .get("CURSOR_FORCE")
-                    .map(|v| v.trim())
-                    .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                {
+                // CLI reads no such env var). Unset means Ask; see
+                // `cursor_force_enabled`.
+                if cursor_force_enabled(runtime_env.get("CURSOR_FORCE").map(String::as_str)) {
                     cmd_args.insert(0, "--force".to_string());
                 }
             }
@@ -4203,6 +4223,8 @@ fn companion_features_arg(flags: CompanionFeatureFlags) -> Option<String> {
 struct CompanionInjection {
     token: String,
     feedback_available: bool,
+    /// Whether the `delegate_to_agent` tool group was exposed this launch.
+    delegation_enabled: bool,
 }
 
 async fn inject_codeg_mcp(
@@ -4213,6 +4235,30 @@ async fn inject_codeg_mcp(
     tasks_enabled: bool,
     host_tools: HostToolsPolicy,
 ) -> Option<CompanionInjection> {
+    inject_codeg_mcp_with_binary_locator(
+        servers,
+        injection,
+        parent_connection_id,
+        working_dir,
+        tasks_enabled,
+        host_tools,
+        locate_codeg_mcp_binary,
+    )
+    .await
+}
+
+async fn inject_codeg_mcp_with_binary_locator<F>(
+    servers: &mut Vec<McpServer>,
+    injection: &DelegationInjection,
+    parent_connection_id: &str,
+    working_dir: &Path,
+    tasks_enabled: bool,
+    host_tools: HostToolsPolicy,
+    locate_binary: F,
+) -> Option<CompanionInjection>
+where
+    F: FnOnce() -> Option<PathBuf>,
+{
     // codeg-mcp carries BOTH the delegation tools and the live-feedback tool.
     // Inject it when EITHER feature is enabled; the `--features` arg tells the
     // companion which tool groups to expose so a disabled feature's tools never
@@ -4244,6 +4290,15 @@ async fn inject_codeg_mcp(
              anyway. Turn that per-agent switch off to restore the delegation tools."
         );
     }
+    // Which agents the user switched off, so the companion's advertised enum
+    // tracks the live toggle. One indexed query, skipped outright when
+    // delegation is off, and it fails open: the spawn-time disabled check is
+    // the hard gate either way.
+    let disabled = if delegation_enabled {
+        injection.agent_availability.disabled_agent_wire_slugs().await
+    } else {
+        Vec::new()
+    };
     let flags = CompanionFeatureFlags {
         delegation: delegation_enabled,
         feedback: feedback_enabled,
@@ -4253,9 +4308,12 @@ async fn inject_codeg_mcp(
         automations: authoring.automations_enabled,
         taskboard: authoring.work_tasks_enabled,
     };
-    // `None` (no feature enabled) short-circuits the whole injection.
+    // `None` (no feature enabled) short-circuits BEFORE the binary lookup, the
+    // token registration and the server append: there is no companion to launch,
+    // and looking for a binary we would never use would also emit the "binary
+    // not found" warning below for a connection that asked for nothing.
     let features_arg = companion_features_arg(flags)?;
-    let Some(binary_path) = locate_codeg_mcp_binary() else {
+    let Some(binary_path) = locate_binary() else {
         tracing::warn!(
             "[delegation][WARN] codeg-mcp companion binary not found (checked CODEG_MCP_BIN, \
              exe sibling, and PATH); skipping delegate_to_agent / check_user_feedback / \
@@ -4264,6 +4322,13 @@ async fn inject_codeg_mcp(
         );
         return None;
     };
+    // Registered-and-enabled custom agents become extra `delegate_to_agent`
+    // targets; disabled BUILT-INS are subtracted companion-side
+    // (`--disabled-agents`) so the embedded schema stays the single source of
+    // truth for the builtin list and its order. Either flag is omitted when
+    // empty, which also keeps an older codeg-mcp binary — one that rejects
+    // unknown flags at startup — working for installations needing neither.
+    let (custom_slugs, disabled_builtins) = delegate_target_args(&disabled);
     let token = uuid::Uuid::new_v4().to_string();
     injection
         .tokens
@@ -4275,7 +4340,7 @@ async fn inject_codeg_mcp(
             },
         )
         .await;
-    let mut server = McpServerStdio::new("codeg-mcp", binary_path);
+    let mut server = McpServerStdio::new("codeg-mcp", binary_path.clone());
     let mut args = vec![
         "--parent-connection-id".to_string(),
         parent_connection_id.to_string(),
@@ -4293,20 +4358,6 @@ async fn inject_codeg_mcp(
         "--features".to_string(),
         features_arg,
     ];
-    // Advertised delegate targets track the user's enable toggles, read
-    // fresh at injection time. Registered-and-enabled custom agents become
-    // extra `delegate_to_agent` targets; disabled BUILT-INS are subtracted
-    // companion-side (`--disabled-agents`) so the embedded schema stays the
-    // single source of truth for the builtin list and its order. Either flag
-    // is omitted when empty: the companion then serves its embedded
-    // builtin-only schema unchanged, and an older codeg-mcp binary (which
-    // rejects unknown flags at startup) keeps working for every installation
-    // that needs neither.
-    let disabled = injection
-        .agent_availability
-        .disabled_agent_wire_slugs()
-        .await;
-    let (custom_slugs, disabled_builtins) = delegate_target_args(&disabled);
     if !custom_slugs.is_empty() {
         args.push("--custom-agents".to_string());
         args.push(custom_slugs.join(","));
@@ -4320,6 +4371,7 @@ async fn inject_codeg_mcp(
     Some(CompanionInjection {
         token,
         feedback_available: feedback_enabled,
+        delegation_enabled: flags.delegation,
     })
 }
 
@@ -5013,10 +5065,18 @@ async fn run_connection(
                 s.goal_actions = Some(goal_actions);
                 if let Some(ref injected) = delegate_injection {
                     s.delegation_token = Some(injected.token.clone());
+                    s.delegation_enabled = injected.delegation_enabled;
                     // The agent's actual feedback capability for this session
                     // — the authoritative gate for submit + UI, fixed at
                     // launch.
                     s.feedback_tool_available = injected.feedback_available;
+                } else {
+                    // Keep a reused/test state fail-closed if companion
+                    // injection was skipped; no stale token or delegation
+                    // capability may survive.
+                    s.delegation_token = None;
+                    s.delegation_enabled = false;
+                    s.feedback_tool_available = false;
                 }
             }
 
@@ -7279,6 +7339,23 @@ fn map_prompt_blocks(blocks: Vec<PromptInputBlock>) -> Vec<ContentBlock> {
         .collect()
 }
 
+/// The single final agent boundary. `delegation_enabled` is this connection's
+/// launch verdict, so routing is appended for EVERY agent that received the
+/// companion's delegation group — that flag is the only gate, and it is already
+/// the injection gate's own verdict (`supports_mcp` + `agent_delivers_wire_mcp`
+/// + the delegation feature being on).
+fn prepare_agent_bound_prompt(
+    agent_type: AgentType,
+    mut blocks: Vec<PromptInputBlock>,
+    delegation_enabled: bool,
+) -> Vec<ContentBlock> {
+    append_agent_routes(&mut blocks, delegation_enabled);
+    if agent_type == AgentType::Grok {
+        blocks = normalize_grok_image_blocks(blocks);
+    }
+    map_prompt_blocks(blocks)
+}
+
 /// Result when the conversation loop exits due to a fork request.
 struct ForkExitInfo {
     fork_response: sacp::schema::ForkSessionResponse,
@@ -8058,17 +8135,12 @@ async fn run_conversation_loop<'a>(
                         .collect();
                     (crate::turn_timings::prompt_hash(&text), cursor_turn_ord)
                 });
-                // Grok: settle each image onto the carriage grok can read —
-                // decodable ones as native Image blocks (so its describe
-                // sidecar runs), the rest back as resource blobs. The last
-                // point that sees the blocks, so every producer (composer,
-                // queued draft, work task, delegation) is covered at once.
-                let blocks = if agent_type == AgentType::Grok {
-                    normalize_grok_image_blocks(blocks)
-                } else {
-                    blocks
-                };
-                let prompt_blocks = map_prompt_blocks(blocks);
+                // Keep the user's blocks pristine through ledgering, previews,
+                // and cross-client broadcast. Only the final agent-bound prompt
+                // receives the machine routing block derived from agent badges.
+                let delegation_enabled = state.read().await.delegation_enabled;
+                let prompt_blocks =
+                    prepare_agent_bound_prompt(agent_type, blocks, delegation_enabled);
                 if prompt_blocks.is_empty() {
                     // Defensive: the manager rejects empty prompts before the
                     // concurrency gate is set / the command is enqueued (see
@@ -13853,6 +13925,22 @@ mod tests {
     }
 
     #[test]
+    fn cursor_force_knob_is_tri_state() {
+        // On.
+        for on in ["1", "true", "TRUE", " 1 "] {
+            assert!(cursor_force_enabled(Some(on)), "{on:?} must enable --force");
+        }
+        // Explicitly off — the value the panel now writes for "Ask before
+        // running", which has to be distinguishable from the unset case.
+        for off in ["0", "false", "", "  "] {
+            assert!(!cursor_force_enabled(Some(off)), "{off:?} must not force");
+        }
+        // Never configured. Ask, matching what Cursor sessions have always
+        // actually done, and matching what the panel now shows.
+        assert!(!cursor_force_enabled(None));
+    }
+
+    #[test]
     fn grok_env_policy_clears_inherited_key_only_in_subscription() {
         let sub: BTreeMap<String, String> =
             [("GROK_AUTH_MODE".to_string(), "subscription".to_string())].into();
@@ -15066,6 +15154,45 @@ mod tests {
             }
             other => panic!("expected Error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn final_agent_boundary_appends_routes_for_every_agent_holding_a_snapshot() {
+        let visible = "ask [@Antigravity](codeg://agent/antigravity) to build";
+        let blocks = vec![PromptInputBlock::Text {
+            text: visible.into(),
+        }];
+        // Not Codex-specific: any parent whose companion carried the delegation
+        // group routes, including custom agents.
+        for parent in [
+            AgentType::Codex,
+            AgentType::ClaudeCode,
+            AgentType::Gemini,
+            AgentType::custom("delegating-custom").expect("valid custom id"),
+        ] {
+            let prompt = prepare_agent_bound_prompt(parent, blocks.clone(), true);
+            assert_eq!(prompt.len(), 2, "{parent} must receive the routing block");
+            assert!(matches!(
+                &prompt[0],
+                ContentBlock::Text(text) if text.text == visible
+            ));
+            assert!(matches!(
+                &prompt[1],
+                ContentBlock::Text(text)
+                    if text.text.contains("Codeg composer routing metadata (authoritative)")
+                        && text.text.contains(r#""agentType":"antigravity""#)
+            ));
+        }
+
+        // An agent that never received the companion (OpenClaw's
+        // supports_mcp=false, pi's wire exclusion) reaches here with delegation
+        // off and keeps a pristine prompt.
+        let unrouted = prepare_agent_bound_prompt(AgentType::OpenClaw, blocks, false);
+        assert_eq!(unrouted.len(), 1);
+        assert!(matches!(
+            &unrouted[0],
+            ContentBlock::Text(text) if text.text == visible
+        ));
     }
 
     #[test]
@@ -19334,6 +19461,88 @@ mod tests {
         ));
     }
 
+    struct TestConversationDepthLookup;
+
+    #[async_trait::async_trait]
+    impl crate::acp::delegation::broker::ConversationDepthLookup for TestConversationDepthLookup {
+        async fn parent_of(
+            &self,
+            _id: i32,
+        ) -> Result<Option<i32>, crate::acp::delegation::types::DelegationError> {
+            Ok(None)
+        }
+    }
+
+    struct TestNoQuestions;
+
+    #[async_trait::async_trait]
+    impl crate::acp::question::SessionQuestionAccess for TestNoQuestions {
+        async fn register_question(
+            &self,
+            _parent_connection_id: &str,
+            _questions: Vec<crate::acp::question::QuestionSpec>,
+        ) -> Option<crate::acp::question::RegisteredQuestion> {
+            None
+        }
+
+        async fn cancel_question(&self, _parent_connection_id: &str, _question_id: &str) {}
+
+        async fn cancel_questions_by_parent(&self, _parent_connection_id: &str) {}
+    }
+
+    struct TestNoPlanApprovals;
+
+    #[async_trait::async_trait]
+    impl crate::acp::plan_approval::SessionPlanApprovalAccess for TestNoPlanApprovals {
+        async fn register_plan_approval(
+            &self,
+            _parent_connection_id: &str,
+            _tool_call_id: String,
+            _plan_markdown: String,
+        ) -> Option<crate::acp::plan_approval::RegisteredPlanApproval> {
+            None
+        }
+
+        async fn cancel_plan_approvals_by_parent(&self, _parent_connection_id: &str) {}
+    }
+
+    struct TestAllAgentsAvailable;
+
+    #[async_trait::async_trait]
+    impl AgentAvailabilityLookup for TestAllAgentsAvailable {
+        async fn disabled_agent_wire_slugs(&self) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    fn test_delegation_injection(
+        agent_availability: Arc<dyn AgentAvailabilityLookup>,
+    ) -> DelegationInjection {
+        use crate::acp::delegation::broker::DelegationBroker;
+        use crate::acp::delegation::listener::TokenRegistry;
+        use crate::acp::delegation::spawner::{mock::MockSpawner, ConnectionSpawner};
+
+        let broker = Arc::new(DelegationBroker::new(
+            Arc::new(MockSpawner::default()) as Arc<dyn ConnectionSpawner>,
+            Arc::new(TestConversationDepthLookup)
+                as Arc<dyn crate::acp::delegation::broker::ConversationDepthLookup>,
+        ));
+        DelegationInjection {
+            broker,
+            tokens: Arc::new(TokenRegistry::default()),
+            socket_path: std::path::PathBuf::from("/tmp/codeg-mcp.sock"),
+            agent_availability,
+            feedback: crate::acp::feedback::FeedbackRuntimeConfig::new(),
+            ask: crate::acp::question::QuestionRuntimeConfig::new(),
+            sessions: crate::acp::session_info::SessionInfoRuntimeConfig::new(),
+            authoring: crate::acp::chat_authoring::ChatAuthoringRuntimeConfig::new(),
+            questions: Arc::new(TestNoQuestions)
+                as Arc<dyn crate::acp::question::SessionQuestionAccess>,
+            plan_approvals: Arc::new(TestNoPlanApprovals)
+                as Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
+        }
+    }
+
     // ─── inject_codeg_mcp: enabled=false short-circuit ──────────
     //
     // Guards the "default off" product contract: when the broker config has
@@ -19345,75 +19554,14 @@ mod tests {
     // opts in via the settings panel.
     #[tokio::test]
     async fn inject_codeg_delegate_skipped_when_broker_disabled() {
-        use crate::acp::delegation::broker::{ConversationDepthLookup, DelegationBroker};
-        use crate::acp::delegation::listener::TokenRegistry;
-        use crate::acp::delegation::spawner::{mock::MockSpawner, ConnectionSpawner};
-        use crate::acp::delegation::types::DelegationError;
-
-        struct EmptyLookup;
-        #[async_trait::async_trait]
-        impl ConversationDepthLookup for EmptyLookup {
-            async fn parent_of(&self, _id: i32) -> Result<Option<i32>, DelegationError> {
-                Ok(None)
-            }
-        }
-
-        let broker = Arc::new(DelegationBroker::new(
-            Arc::new(MockSpawner::default()) as Arc<dyn ConnectionSpawner>,
-            Arc::new(EmptyLookup) as Arc<dyn ConversationDepthLookup>,
-        ));
         // No set_config call: broker carries its default config, which is
         // `enabled: false` after the product-default flip. This is the
         // exact state a fresh install reaches before the user touches the
         // settings panel. Feedback is likewise disabled by default, so with
         // BOTH features off the companion isn't injected at all.
-        struct NoQuestions;
-        #[async_trait::async_trait]
-        impl crate::acp::question::SessionQuestionAccess for NoQuestions {
-            async fn register_question(
-                &self,
-                _parent_connection_id: &str,
-                _questions: Vec<crate::acp::question::QuestionSpec>,
-            ) -> Option<crate::acp::question::RegisteredQuestion> {
-                None
-            }
-            async fn cancel_question(&self, _parent_connection_id: &str, _question_id: &str) {}
-            async fn cancel_questions_by_parent(&self, _parent_connection_id: &str) {}
-        }
-        struct NoPlanApprovals;
-        #[async_trait::async_trait]
-        impl crate::acp::plan_approval::SessionPlanApprovalAccess for NoPlanApprovals {
-            async fn register_plan_approval(
-                &self,
-                _parent_connection_id: &str,
-                _tool_call_id: String,
-                _plan_markdown: String,
-            ) -> Option<crate::acp::plan_approval::RegisteredPlanApproval> {
-                None
-            }
-            async fn cancel_plan_approvals_by_parent(&self, _parent_connection_id: &str) {}
-        }
-        struct AllEnabled;
-        #[async_trait::async_trait]
-        impl AgentAvailabilityLookup for AllEnabled {
-            async fn disabled_agent_wire_slugs(&self) -> Vec<String> {
-                Vec::new()
-            }
-        }
-        let injection = DelegationInjection {
-            broker,
-            tokens: Arc::new(TokenRegistry::default()),
-            socket_path: std::path::PathBuf::from("/tmp/codeg-mcp.sock"),
-            agent_availability: Arc::new(AllEnabled) as Arc<dyn AgentAvailabilityLookup>,
-            feedback: crate::acp::feedback::FeedbackRuntimeConfig::new(),
-            ask: crate::acp::question::QuestionRuntimeConfig::new(),
-            sessions: crate::acp::session_info::SessionInfoRuntimeConfig::new(),
-            authoring: crate::acp::chat_authoring::ChatAuthoringRuntimeConfig::new(),
-            questions: Arc::new(NoQuestions)
-                as Arc<dyn crate::acp::question::SessionQuestionAccess>,
-            plan_approvals: Arc::new(NoPlanApprovals)
-                as Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
-        };
+        let injection = test_delegation_injection(
+            Arc::new(TestAllAgentsAvailable) as Arc<dyn AgentAvailabilityLookup>
+        );
 
         let mut servers: Vec<McpServer> = Vec::new();
         let result = inject_codeg_mcp(
