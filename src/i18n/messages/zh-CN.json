@@ -304,6 +304,10 @@
     "gitlabDescription": "管理用于身份验证的 GitLab 账号。令牌存储在本地。",
     "gitlabTokenHint": "在 GitLab → Preferences → Access tokens 中创建带 api 权限的个人访问令牌。",
     "gitlabNoAccounts": "还没有 GitLab 账号",
+    "giteaTitle": "Gitea 账号",
+    "giteaDescription": "管理用于身份验证的 Gitea（及 Forgejo）账号。令牌存储在本地。",
+    "giteaTokenHint": "在 Gitea → Settings → Applications 中创建带 write:repository、write:issue 和 read:user 权限的访问令牌。",
+    "giteaNoAccounts": "还没有 Gitea 账号",
     "noAccounts": "暂无 GitHub 账号。",
     "addAccount": "添加账号",
     "serverUrl": "服务器地址",
@@ -336,7 +340,7 @@
     "loadFailed": "加载设置失败：{message}",
     "gitAccount": {
       "sectionTitle": "Git 服务器账号",
-      "sectionDescription": "管理非 GitHub 的 Git 服务器凭据（GitLab、Bitbucket、自建服务等）。",
+      "sectionDescription": "管理没有独立分区的 Git 服务器凭据（Bitbucket、自建服务等）。",
       "noAccounts": "暂无 Git 服务器账号。",
       "addAccount": "添加账号",
       "addTitle": "添加 Git 账号",
@@ -2815,6 +2819,7 @@
           "turnFailedMaxTokens": "{agent} 已达到本轮回复的最大 Token 限制。",
           "turnFailedMaxTurnRequests": "{agent} 已达到本轮回复允许的最大请求次数。",
           "turnFailedUnknown": "{agent} 以未知的停止原因结束了本轮回复。",
+          "turnFailedAuthRequired": "{agent} 需要你重新登录后才能执行本轮回复。请在设置中登录，然后重新发送这条消息。",
           "grokModelSwitchIncompatibleAgent": "{agent} 无法在已有对话中切换到该模型，请新建会话以使用它。",
           "turnFailedEmpty": "{agent} 本轮没有产生任何回复就结束了。",
           "turnFailedEmptyProtocol": "{agent} 本轮的输出 codeg 无法解析，可能是代理版本与协议不匹配。",
@@ -2902,8 +2907,10 @@
         "send": "发送",
         "queueMessage": "加入队列",
         "steerIntoTurn": "插入当前回合",
+        "steerAsNote": "发送留言，供下次检查时读取",
         "steerQueuedInstead": "已转入队列——将随下一回合发送。",
         "steerFailed": "无法插入当前回合",
+        "steerNoteFailed": "留言发送失败",
         "slashCommands": "斜杠命令",
         "slashSearchPlaceholder": "搜索命令...",
         "slashSearchEmpty": "没有匹配的命令",
@@ -3279,6 +3286,7 @@
             "child_max_tokens": "子代理超出 token 上限",
             "child_max_turn_requests": "子代理超出请求上限",
             "child_empty": "子代理无响应",
+            "child_auth_required": "子智能体需登录",
             "child_unknown": "子代理未知错误",
             "unknown": "未知任务"
           }
@@ -5321,7 +5329,7 @@
     "noRemote": "该文件夹没有可识别的代码托管远端（origin）",
     "errors": {
       "noAccount": "还没有为 {host} 配置 {provider} 账号。请在「设置 → 版本控制」中添加后再加载该仓库。",
-      "unsupportedHost": "仓库面板目前仅支持 GitHub 和 GitLab，而 {host} 不是其中任何一种。如果它是自建的 GitHub Enterprise 或 GitLab 实例，请在「设置 → 版本控制」中为它添加账号。",
+      "unsupportedHost": "仓库面板目前仅支持 GitHub、GitLab 和 Gitea，而 {host} 不是其中任何一种。如果它是自建的 GitHub Enterprise、GitLab、Gitea 或 Forgejo 实例，请在「设置 → 版本控制」中为它添加账号。",
       "wrongForge": "{host} 实际上是 {provider}，此前被误判为另一种代码托管服务。已自动更正，请重新加载。"
     },
     "addAccount": "添加账号",

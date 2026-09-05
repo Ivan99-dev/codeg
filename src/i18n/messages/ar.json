@@ -304,6 +304,10 @@
     "gitlabDescription": "إدارة حسابات GitLab للمصادقة. يتم تخزين الرموز محليًا.",
     "gitlabTokenHint": "أنشئ رمز وصول شخصيًا بنطاق api من GitLab → Preferences → Access tokens.",
     "gitlabNoAccounts": "لا يوجد حساب GitLab بعد",
+    "giteaTitle": "حسابات Gitea",
+    "giteaDescription": "إدارة حسابات Gitea (و Forgejo) للمصادقة. يتم تخزين الرموز محليًا.",
+    "giteaTokenHint": "أنشئ رمز وصول بنطاقات write:repository و write:issue و read:user من Gitea → Settings → Applications.",
+    "giteaNoAccounts": "لا يوجد حساب Gitea بعد",
     "noAccounts": "لا توجد حسابات GitHub مكوّنة.",
     "addAccount": "إضافة حساب",
     "serverUrl": "عنوان الخادم",
@@ -336,7 +340,7 @@
     "loadFailed": "فشل تحميل الإعدادات: {message}",
     "gitAccount": {
       "sectionTitle": "حسابات خادم Git",
-      "sectionDescription": "إدارة بيانات الاعتماد لخوادم Git غير GitHub (GitLab، Bitbucket، الخوادم الذاتية، إلخ).",
+      "sectionDescription": "إدارة بيانات اعتماد خوادم Git التي ليس لها قسم خاص (Bitbucket، الاستضافة الذاتية، إلخ).",
       "noAccounts": "لا توجد حسابات خادم Git مكوّنة.",
       "addAccount": "إضافة حساب",
       "addTitle": "إضافة حساب Git",
@@ -2815,6 +2819,7 @@
           "turnFailedMaxTokens": "بلغ {agent} الحد الأقصى للرموز المسموح بها في هذه الجولة.",
           "turnFailedMaxTurnRequests": "بلغ {agent} الحد الأقصى لعدد الطلبات المسموح بها في هذه الجولة.",
           "turnFailedUnknown": "أنهى {agent} الجولة بسبب توقف غير معروف.",
+          "turnFailedAuthRequired": "يحتاج {agent} إلى تسجيل دخولك من جديد قبل تنفيذ هذه الجولة. سجّل الدخول من الإعدادات ثم أعد إرسال الرسالة.",
           "grokModelSwitchIncompatibleAgent": "لا يمكن لـ {agent} التبديل إلى هذا النموذج في محادثة قائمة. ابدأ جلسة جديدة لاستخدامه.",
           "turnFailedEmpty": "أنهى {agent} الجولة دون إنتاج أي رد.",
           "turnFailedEmptyProtocol": "أنتج {agent} مخرجات تعذّر على codeg تحليلها — قد لا يتوافق إصدار الوكيل مع البروتوكول.",
@@ -2900,8 +2905,10 @@
         "send": "إرسال",
         "queueMessage": "إضافة إلى قائمة الانتظار",
         "steerIntoTurn": "إدراج في الدور الحالي",
+        "steerAsNote": "إرسال ملاحظة للفحص التالي",
         "steerQueuedInstead": "أُضيفت إلى قائمة الانتظار — ستُرسل مع الدور التالي.",
         "steerFailed": "تعذّر الإدراج في الدور الحالي",
+        "steerNoteFailed": "تعذّر إرسال ملاحظتك",
         "slashCommands": "أوامر الشرطة المائلة",
         "slashSearchPlaceholder": "البحث عن الأوامر...",
         "slashSearchEmpty": "لا توجد أوامر مطابقة",
@@ -3279,6 +3286,7 @@
             "child_max_tokens": "الوكيل الفرعي: حد الرموز",
             "child_max_turn_requests": "الوكيل الفرعي: حد الطلبات",
             "child_empty": "الوكيل الفرعي بدون استجابة",
+            "child_auth_required": "الوكيل الفرعي يحتاج تسجيل دخول",
             "child_unknown": "الوكيل الفرعي: خطأ",
             "unknown": "مهمة غير معروفة"
           }
@@ -5321,7 +5329,7 @@
     "noRemote": "لا يحتوي هذا المجلد على remote معروف (origin)",
     "errors": {
       "noAccount": "لا يوجد حساب {provider} مُهيّأ للمضيف {host}. أضف حسابًا من الإعدادات ← التحكم بالإصدارات لتحميل هذا المستودع.",
-      "unsupportedHost": "لوحة المستودع تدعم GitHub و GitLab فقط، و{host} لا يُعرَف كأي منهما. إذا كان مثيلًا مستضافًا ذاتيًا من GitHub Enterprise أو GitLab، فأضف له حسابًا من الإعدادات ← التحكم بالإصدارات.",
+      "unsupportedHost": "لوحة المستودع تدعم GitHub و GitLab و Gitea فقط، و{host} لا يُعرَف كأي منها. إذا كان مثيلًا مستضافًا ذاتيًا من GitHub Enterprise أو GitLab أو Gitea أو Forgejo، فأضف له حسابًا من الإعدادات ← التحكم بالإصدارات.",
       "wrongForge": "{host} هو {provider}، وليس المنصة التي كان مصنّفًا ضمنها. تم تصحيح الاكتشاف — أعد التحميل للمحاولة مجددًا."
     },
     "addAccount": "إضافة حساب",

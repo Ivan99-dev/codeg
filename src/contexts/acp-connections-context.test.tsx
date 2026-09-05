@@ -19,6 +19,7 @@ import type {
   EventEnvelope,
   LiveSessionSnapshot,
   SessionConfigOptionInfo,
+  UserMessageBlock,
 } from "@/lib/types"
 
 // Shared spies + a stub EventStream. `vi.hoisted` runs before the mock
@@ -2394,6 +2395,27 @@ describe("empty-turn error diagnostics", () => {
     })
   })
 
+  // claude-agent-acp 0.74.0 rejects the prompt with ACP's `authRequired` on a
+  // mid-session sign-out. The backend keeps that turn-scoped and synthesizes
+  // `turn_failed_auth_required`; without its own case here the user would get
+  // the raw English "needs you to sign in again" string instead.
+  it("localizes the auth-required turn code", async () => {
+    const handlers = await connectOwner()
+
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "error",
+      message: "raw english fallback",
+      agent_type: "claude_code",
+      code: "turn_failed_auth_required",
+    })
+
+    expect(h.store!.getConnection(TAB)!.error).toBe(
+      "backendErrors.turnFailedAuthRequired"
+    )
+  })
+
   it("routes details to the alert's evidence slot, keeping them out of detail, conn.error and the OS notification", async () => {
     const handlers = await connectOwner()
     h.pushAlert.mockClear()
@@ -4226,13 +4248,20 @@ describe("AcpConnectionsProvider mid-turn steering messages", () => {
     seq: number,
     id: string,
     text: string,
-    status: "pending" | "delivered"
+    status: "pending" | "delivered",
+    blocks?: UserMessageBlock[]
   ): EventEnvelope {
     return {
       seq,
       connection_id: "spawned-conn",
       type: "feedback_submitted",
-      item: { id, text, created_at: STEER_AT, status },
+      item: {
+        id,
+        text,
+        created_at: STEER_AT,
+        status,
+        ...(blocks && { blocks }),
+      },
     } as unknown as EventEnvelope
   }
 
@@ -4258,9 +4287,53 @@ describe("AcpConnectionsProvider mid-turn steering messages", () => {
         id: "n1",
         text: "use the other API",
         createdAt: STEER_AT,
+        // A text-only note records no block list, so the renderer falls back
+        // to `text` exactly as it always has.
+        blocks: null,
       },
     ])
     expect(conn().steeredMessageIds).toEqual(["n1"])
+  })
+
+  it("carries a steered note's image into the live turn, not just its text", async () => {
+    // `text` is the composer's display form — it collapses an attachment into
+    // words. Without the note's blocks the running turn would show a sentence
+    // about the image and only a reload (which reads the agent's own copy)
+    // would put the image back.
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    })
+    emitAcpEvent(
+      handlers,
+      submitted(2, "n1", "this colour", "delivered", [
+        { type: "text", text: "this colour" },
+        { type: "image", data: "aGk=", mime_type: "image/png" },
+      ])
+    )
+
+    expect(steeringBlocks()).toEqual([
+      {
+        type: "steering",
+        id: "n1",
+        text: "this colour",
+        createdAt: STEER_AT,
+        // Widened to `ContentBlock`s, the same shape a `user_message` echo
+        // produces, so one message renders identically by either route.
+        blocks: [
+          { type: "text", text: "this colour" },
+          {
+            type: "image",
+            data: "aGk=",
+            mime_type: "image/png",
+            uri: null,
+          },
+        ],
+      },
+    ])
   })
 
   it("ignores a pending note - the pull channel is not a user message", async () => {

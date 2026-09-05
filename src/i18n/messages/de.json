@@ -304,6 +304,10 @@
     "gitlabDescription": "GitLab-Konten für die Authentifizierung verwalten. Token werden lokal gespeichert.",
     "gitlabTokenHint": "Erstellen Sie unter GitLab → Preferences → Access tokens einen Personal Access Token mit dem Scope api.",
     "gitlabNoAccounts": "Noch kein GitLab-Konto",
+    "giteaTitle": "Gitea-Konten",
+    "giteaDescription": "Gitea- (und Forgejo-)Konten für die Authentifizierung verwalten. Token werden lokal gespeichert.",
+    "giteaTokenHint": "Erstellen Sie unter Gitea → Settings → Applications einen Access Token mit den Scopes write:repository, write:issue und read:user.",
+    "giteaNoAccounts": "Noch kein Gitea-Konto",
     "noAccounts": "Keine GitHub-Konten konfiguriert.",
     "addAccount": "Konto hinzufügen",
     "serverUrl": "Server-URL",
@@ -336,7 +340,7 @@
     "loadFailed": "Einstellungen konnten nicht geladen werden: {message}",
     "gitAccount": {
       "sectionTitle": "Git-Server-Konten",
-      "sectionDescription": "Verwalten Sie Anmeldedaten für Nicht-GitHub-Git-Server (GitLab, Bitbucket, selbst gehostet usw.).",
+      "sectionDescription": "Zugangsdaten für Git-Server ohne eigenen Abschnitt verwalten (Bitbucket, selbst gehostet usw.).",
       "noAccounts": "Keine Git-Server-Konten konfiguriert.",
       "addAccount": "Konto hinzufügen",
       "addTitle": "Git-Konto hinzufügen",
@@ -2815,6 +2819,7 @@
           "turnFailedMaxTokens": "{agent} hat das Token-Limit für diese Runde erreicht.",
           "turnFailedMaxTurnRequests": "{agent} hat die maximale Anzahl zulässiger Anfragen für diese Runde erreicht.",
           "turnFailedUnknown": "{agent} hat die Runde mit einem unbekannten Stoppgrund beendet.",
+          "turnFailedAuthRequired": "{agent} benötigt eine erneute Anmeldung, bevor diese Runde ausgeführt werden kann. Melde dich in den Einstellungen an und sende die Nachricht erneut.",
           "grokModelSwitchIncompatibleAgent": "{agent} kann in einer bestehenden Unterhaltung nicht zu diesem Modell wechseln. Starte eine neue Sitzung, um es zu verwenden.",
           "turnFailedEmpty": "{agent} hat die Runde ohne jegliche Antwort beendet.",
           "turnFailedEmptyProtocol": "{agent} hat eine Ausgabe erzeugt, die codeg nicht auswerten konnte — die Agent-Version passt möglicherweise nicht zum Protokoll.",
@@ -2900,8 +2905,10 @@
         "send": "Senden",
         "queueMessage": "In Warteschlange stellen",
         "steerIntoTurn": "In laufenden Turn einfügen",
+        "steerAsNote": "Notiz für die nächste Prüfung senden",
         "steerQueuedInstead": "Stattdessen in die Warteschlange gestellt – wird mit dem nächsten Turn gesendet.",
         "steerFailed": "Konnte nicht in den laufenden Turn eingefügt werden",
+        "steerNoteFailed": "Deine Notiz konnte nicht gesendet werden",
         "slashCommands": "Slash-Befehle",
         "slashSearchPlaceholder": "Befehle suchen...",
         "slashSearchEmpty": "Keine passenden Befehle",
@@ -3279,6 +3286,7 @@
             "child_max_tokens": "Subagent: Token-Limit",
             "child_max_turn_requests": "Subagent: Anfragelimit",
             "child_empty": "Subagent ohne Ausgabe",
+            "child_auth_required": "Subagent braucht Anmeldung",
             "child_unknown": "Subagent: Fehler",
             "unknown": "unbekannte Aufgabe"
           }
@@ -5321,7 +5329,7 @@
     "noRemote": "Dieser Ordner hat kein erkennbares Forge-Remote (origin)",
     "errors": {
       "noAccount": "Für {host} ist kein {provider}-Konto konfiguriert. Füge unter Einstellungen → Versionskontrolle eines hinzu, um dieses Repository zu laden.",
-      "unsupportedHost": "Das Repository-Panel unterstützt nur GitHub und GitLab, und {host} wird als keines von beiden erkannt. Falls es sich um eine selbst gehostete GitHub-Enterprise- oder GitLab-Instanz handelt, füge unter Einstellungen → Versionskontrolle ein Konto dafür hinzu.",
+      "unsupportedHost": "Das Repository-Panel unterstützt nur GitHub, GitLab und Gitea, und {host} wird als keines davon erkannt. Falls es sich um eine selbst gehostete GitHub-Enterprise-, GitLab-, Gitea- oder Forgejo-Instanz handelt, füge unter Einstellungen → Versionskontrolle ein Konto dafür hinzu.",
       "wrongForge": "{host} ist ein {provider} und nicht die Forge, als die es eingestuft war. Die Erkennung wurde korrigiert — neu laden, um es erneut zu versuchen."
     },
     "addAccount": "Konto hinzufügen",

@@ -304,6 +304,10 @@
     "gitlabDescription": "Gestiona las cuentas de GitLab para autenticación. Los tokens se almacenan localmente.",
     "gitlabTokenHint": "Crea un token de acceso personal con el ámbito api en GitLab → Preferences → Access tokens.",
     "gitlabNoAccounts": "Aún no hay ninguna cuenta de GitLab",
+    "giteaTitle": "Cuentas de Gitea",
+    "giteaDescription": "Gestiona las cuentas de Gitea (y Forgejo) para autenticación. Los tokens se almacenan localmente.",
+    "giteaTokenHint": "Crea un token de acceso con los ámbitos write:repository, write:issue y read:user en Gitea → Settings → Applications.",
+    "giteaNoAccounts": "Aún no hay ninguna cuenta de Gitea",
     "noAccounts": "No hay cuentas de GitHub configuradas.",
     "addAccount": "Añadir cuenta",
     "serverUrl": "URL del servidor",
@@ -336,7 +340,7 @@
     "loadFailed": "Error al cargar configuración: {message}",
     "gitAccount": {
       "sectionTitle": "Cuentas de servidor Git",
-      "sectionDescription": "Gestiona credenciales para servidores Git que no son GitHub (GitLab, Bitbucket, autoalojados, etc.).",
+      "sectionDescription": "Gestiona las credenciales de servidores Git que no tienen su propia sección (Bitbucket, autoalojados, etc.).",
       "noAccounts": "No hay cuentas de servidor Git configuradas.",
       "addAccount": "Añadir cuenta",
       "addTitle": "Añadir cuenta Git",
@@ -2815,6 +2819,7 @@
           "turnFailedMaxTokens": "{agent} alcanzó el límite máximo de tokens para este turno.",
           "turnFailedMaxTurnRequests": "{agent} alcanzó el número máximo de solicitudes permitidas para este turno.",
           "turnFailedUnknown": "{agent} finalizó el turno con un motivo de parada no reconocido.",
+          "turnFailedAuthRequired": "{agent} necesita que inicies sesión de nuevo antes de ejecutar este turno. Inicia sesión desde Ajustes y vuelve a enviar el mensaje.",
           "grokModelSwitchIncompatibleAgent": "{agent} no puede cambiar a ese modelo en una conversación existente. Inicia una nueva sesión para usarlo.",
           "turnFailedEmpty": "{agent} finalizó el turno sin producir ninguna respuesta.",
           "turnFailedEmptyProtocol": "{agent} produjo una salida que codeg no pudo analizar; la versión del agente podría no coincidir con el protocolo.",
@@ -2900,8 +2905,10 @@
         "send": "Enviar",
         "queueMessage": "Poner en cola",
         "steerIntoTurn": "Insertar en el turno actual",
+        "steerAsNote": "Enviar nota para la próxima comprobación",
         "steerQueuedInstead": "Se puso en cola: se enviará con el siguiente turno.",
         "steerFailed": "No se pudo insertar en el turno actual",
+        "steerNoteFailed": "No se pudo enviar tu nota",
         "slashCommands": "Comandos de barra",
         "slashSearchPlaceholder": "Buscar comandos...",
         "slashSearchEmpty": "Sin comandos coincidentes",
@@ -3279,6 +3286,7 @@
             "child_max_tokens": "subagente: límite de tokens",
             "child_max_turn_requests": "subagente: límite de solicitudes",
             "child_empty": "subagente sin salida",
+            "child_auth_required": "subagente requiere sesión",
             "child_unknown": "subagente: error",
             "unknown": "tarea desconocida"
           }
@@ -5321,7 +5329,7 @@
     "noRemote": "Esta carpeta no tiene un remoto reconocible (origin)",
     "errors": {
       "noAccount": "No hay ninguna cuenta de {provider} configurada para {host}. Añade una en Configuración → Control de versiones para cargar este repositorio.",
-      "unsupportedHost": "El panel del repositorio solo admite GitHub y GitLab, y {host} no se reconoce como ninguno de los dos. Si es una instancia autoalojada de GitHub Enterprise o GitLab, añade una cuenta para ella en Configuración → Control de versiones.",
+      "unsupportedHost": "El panel del repositorio solo admite GitHub, GitLab y Gitea, y {host} no se reconoce como ninguno de ellos. Si es una instancia autoalojada de GitHub Enterprise, GitLab, Gitea o Forgejo, añade una cuenta para ella en Configuración → Control de versiones.",
       "wrongForge": "{host} es un {provider}, no la forja con la que estaba clasificado. La detección se ha corregido: vuelve a cargar para reintentar."
     },
     "addAccount": "Añadir una cuenta",

@@ -304,6 +304,10 @@
     "gitlabDescription": "管理用於身份驗證的 GitLab 帳號。權杖儲存在本機。",
     "gitlabTokenHint": "在 GitLab → Preferences → Access tokens 中建立具備 api 權限的個人存取權杖。",
     "gitlabNoAccounts": "還沒有 GitLab 帳號",
+    "giteaTitle": "Gitea 帳號",
+    "giteaDescription": "管理用於身份驗證的 Gitea（及 Forgejo）帳號。權杖儲存在本機。",
+    "giteaTokenHint": "在 Gitea → Settings → Applications 中建立具備 write:repository、write:issue 與 read:user 權限的存取權杖。",
+    "giteaNoAccounts": "還沒有 Gitea 帳號",
     "noAccounts": "尚未設定 GitHub 帳號。",
     "addAccount": "新增帳號",
     "serverUrl": "伺服器網址",
@@ -336,7 +340,7 @@
     "loadFailed": "載入設定失敗：{message}",
     "gitAccount": {
       "sectionTitle": "Git 伺服器帳號",
-      "sectionDescription": "管理非 GitHub 的 Git 伺服器憑據（GitLab、Bitbucket、自建服務等）。",
+      "sectionDescription": "管理沒有獨立區塊的 Git 伺服器憑證（Bitbucket、自架服務等）。",
       "noAccounts": "尚未設定 Git 伺服器帳號。",
       "addAccount": "新增帳號",
       "addTitle": "新增 Git 帳號",
@@ -2815,6 +2819,7 @@
           "turnFailedMaxTokens": "{agent} 已達到此輪回覆的最大 Token 限制。",
           "turnFailedMaxTurnRequests": "{agent} 已達到此輪回覆允許的最大請求次數。",
           "turnFailedUnknown": "{agent} 以未知的停止原因結束了此輪回覆。",
+          "turnFailedAuthRequired": "{agent} 需要你重新登入後才能執行本輪回覆。請在設定中登入，然後重新傳送這則訊息。",
           "grokModelSwitchIncompatibleAgent": "{agent} 無法在既有對話中切換到該模型，請新建工作階段以使用它。",
           "turnFailedEmpty": "{agent} 此輪沒有產生任何回覆就結束了。",
           "turnFailedEmptyProtocol": "{agent} 此輪的輸出 codeg 無法解析，可能是代理版本與協定不相符。",
@@ -2900,8 +2905,10 @@
         "send": "傳送",
         "queueMessage": "加入佇列",
         "steerIntoTurn": "插入目前回合",
+        "steerAsNote": "傳送留言，供下次檢查時讀取",
         "steerQueuedInstead": "已轉入佇列——將隨下一回合傳送。",
         "steerFailed": "無法插入目前回合",
+        "steerNoteFailed": "留言送出失敗",
         "slashCommands": "斜線命令",
         "slashSearchPlaceholder": "搜尋命令...",
         "slashSearchEmpty": "沒有符合的指令",
@@ -3279,6 +3286,7 @@
             "child_max_tokens": "子代理超出 token 上限",
             "child_max_turn_requests": "子代理超出請求上限",
             "child_empty": "子代理無回應",
+            "child_auth_required": "子智慧體需登入",
             "child_unknown": "子代理未知錯誤",
             "unknown": "未知任務"
           }
@@ -5321,7 +5329,7 @@
     "noRemote": "該資料夾沒有可識別的程式碼託管遠端（origin）",
     "errors": {
       "noAccount": "尚未為 {host} 設定 {provider} 帳號。請先在「設定 → 版本控制」中新增，才能載入這個儲存庫。",
-      "unsupportedHost": "儲存庫面板目前僅支援 GitHub 與 GitLab，而 {host} 不屬於其中任何一種。如果它是自架的 GitHub Enterprise 或 GitLab 執行個體，請在「設定 → 版本控制」中為它新增帳號。",
+      "unsupportedHost": "儲存庫面板目前僅支援 GitHub、GitLab 與 Gitea，而 {host} 不屬於其中任何一種。如果它是自架的 GitHub Enterprise、GitLab、Gitea 或 Forgejo 執行個體，請在「設定 → 版本控制」中為它新增帳號。",
       "wrongForge": "{host} 實際上是 {provider}，先前被誤判為另一種程式碼託管服務。已自動更正，請重新載入。"
     },
     "addAccount": "新增帳號",
