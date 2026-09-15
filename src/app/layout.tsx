@@ -13,6 +13,7 @@ import { OverlayScrollbarsInit } from "@/components/overlay-scrollbars-init"
 import { ClipboardFallbackInit } from "@/components/clipboard-fallback-init"
 import { WebConnectionGuard } from "@/components/connection/web-connection-guard"
 import { WindowResizeGrips } from "@/components/layout/window-resize-grips"
+import { CloseRequestDialog } from "@/components/workspace/close-request-dialog"
 
 const CODEG_DEBUG_PROBE_SCRIPT = `
 (function() {
@@ -105,6 +106,10 @@ export default async function RootLayout({
                 <ClipboardFallbackInit />
                 <WebConnectionGuard />
                 <WindowResizeGrips />
+                {/* Self-gated to the main window: every route it can show
+                    (/workspace, /login, the redirecting /) must be able to
+                    answer a close press. */}
+                <CloseRequestDialog />
                 {children}
               </AppearanceProvider>
             </ThemeProvider>

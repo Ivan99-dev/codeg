@@ -156,11 +156,16 @@ pub fn set_force_command_color(enabled: bool) {
     FORCE_COMMAND_COLOR.store(enabled, Ordering::Relaxed);
 }
 
+/// `scratch` is the per-launch temp directory from
+/// [`crate::acp::scratch_dir`], or `None` when isolation is off or the
+/// directory could not be created (then the child inherits the ambient temp
+/// dir, exactly as it did before).
 fn merge_agent_env(
     env: &[(&'static str, &'static str)],
     runtime_env: &BTreeMap<String, String>,
+    scratch: Option<&Path>,
 ) -> Vec<(String, String)> {
-    merge_agent_env_with_color(force_command_color_enabled(), env, runtime_env)
+    merge_agent_env_with_color(force_command_color_enabled(), env, runtime_env, scratch)
 }
 
 /// [`merge_agent_env`] with the color decision handed in.
@@ -172,6 +177,7 @@ fn merge_agent_env_with_color(
     force_color: bool,
     env: &[(&'static str, &'static str)],
     runtime_env: &BTreeMap<String, String>,
+    scratch: Option<&Path>,
 ) -> Vec<(String, String)> {
     // Env var order is not semantically meaningful; use map overwrite semantics
     // to keep precedence while avoiding repeated O(n) scans.
@@ -199,6 +205,18 @@ fn merge_agent_env_with_color(
     // even when codeg installed the binary outside the user's shell PATH — the
     // Windows self-managed dir, or `~/.local/bin` under a GUI launch.
     prepend_officecli_path(&mut merged);
+
+    // LAST, after `runtime_env`, and that ordering is the whole fix rather than
+    // a style choice. A self-extracting agent binary resolves its unpack
+    // location from `TMP` before `TEMP` (Windows `GetTempPathW`), so leaving a
+    // per-agent `env_json` `TMP` in place would send a 1.17 GB extraction
+    // wherever that points while codeg cheerfully deleted an empty scratch
+    // directory and reported the leak fixed. Users who want the churn on
+    // another volume set `CODEG_ACP_TMP_ROOT`; users who want the old
+    // pass-through wholesale set `CODEG_ACP_TMP_ISOLATION=0`.
+    if let Some(dir) = scratch {
+        crate::acp::scratch_dir::apply_to_env(&mut merged, dir);
+    }
 
     merged.into_iter().collect()
 }
@@ -717,7 +735,13 @@ pub fn sync_antigravity_settings_for_env(
 /// Deliberately does NOT run [`sync_antigravity_settings_file`]: this returns a
 /// value and that writes a file, and the sign-in path wants the report rather
 /// than a silently dropped one. Callers run the sync themselves.
-pub fn antigravity_launch_env(runtime_env: &BTreeMap<String, String>) -> Vec<(String, String)> {
+///
+/// `scratch` is `None` for the settings panel, which builds this env to INSPECT
+/// it and spawns nothing; the sign-in/sign-out path passes its own directory.
+pub fn antigravity_launch_env(
+    runtime_env: &BTreeMap<String, String>,
+    scratch: Option<&Path>,
+) -> Vec<(String, String)> {
     let registry_env: &[(&'static str, &'static str)] =
         match registry::get_agent_meta(AgentType::Antigravity).distribution {
             AgentDistribution::Binary { env, .. } => env,
@@ -726,7 +750,7 @@ pub fn antigravity_launch_env(runtime_env: &BTreeMap<String, String>) -> Vec<(St
             // `runtime_env` carries everything the panel owns.
             _ => &[],
         };
-    let mut merged = merge_agent_env(registry_env, runtime_env);
+    let mut merged = merge_agent_env(registry_env, runtime_env, scratch);
     apply_antigravity_env_policy(&mut merged, runtime_env);
     merged
 }
@@ -1049,6 +1073,41 @@ fn prepend_dir_to_path_env(
         .next_back()
         .unwrap_or_else(|| if windows { "Path" } else { "PATH" }.to_string());
     env.insert(key, new_path);
+}
+
+/// Prepend an agent's own installer directories (see
+/// [`registry::binary_system_dirs`]) to a merged env's PATH.
+///
+/// Operates on the merged `Vec` rather than inside [`merge_agent_env`] because
+/// it is the one PATH contributor that depends on WHICH agent is launching,
+/// and `merge_agent_env` is deliberately agent-agnostic (it is also called from
+/// the settings panel, with no agent process in hand).
+fn prepend_agent_install_dirs_path(env: &mut Vec<(String, String)>, agent_type: AgentType) {
+    let dirs = registry::binary_system_dirs(agent_type);
+    if dirs.is_empty() {
+        return;
+    }
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let fallback = std::env::var("PATH").unwrap_or_default();
+    let mut map: BTreeMap<String, String> = std::mem::take(env).into_iter().collect();
+    // Reverse, because each pass prepends: walking `[a, b]` forwards would
+    // leave `b` ahead of `a` and quietly invert the registry's declared
+    // precedence the first time an agent lists two directories.
+    for dir in dirs.iter().rev() {
+        let joined = home.join(dir);
+        if !joined.is_dir() {
+            continue;
+        }
+        prepend_dir_to_path_env(
+            &mut map,
+            &joined.to_string_lossy(),
+            &fallback,
+            cfg!(windows),
+        );
+    }
+    *env = map.into_iter().collect();
 }
 
 /// Prepend codeg's known OfficeCLI install dir to `env`'s PATH when officecli is
@@ -1683,6 +1742,7 @@ async fn build_agent(
     runtime_env: &BTreeMap<String, String>,
     cwd: &Path,
     stderr_tail: &Arc<StderrTail>,
+    scratch: Option<&Path>,
 ) -> Result<AcpAgent, AcpError> {
     // A conversation can outlive the custom-agent definition it was started
     // with (the user deleted it in settings). `get_agent_meta` cannot report
@@ -1733,7 +1793,7 @@ async fn build_agent(
                     return Err(AcpError::PiProjectTrustRequired(message));
                 }
             }
-            let mut merged_env = merge_agent_env(env, runtime_env);
+            let mut merged_env = merge_agent_env(env, runtime_env, scratch);
             // Resolve the config-derived preset HERE (like Grok's
             // `grok_launch_permission_mode` below) so the policy helper stays a
             // pure function over the env list.
@@ -1883,7 +1943,8 @@ async fn build_agent(
                     path
                 }
                 None => {
-                    let system = crate::commands::acp::resolve_system_agent_binary(cmd)
+                    let system =
+                        crate::commands::acp::resolve_system_agent_binary_for(agent_type, cmd)
                         .ok_or_else(|| {
                             AcpError::SdkNotInstalled(format!(
                                 "{} is not installed. Please install it in Agent Settings.",
@@ -1935,7 +1996,13 @@ async fn build_agent(
             if !cmd_args.is_empty() {
                 server = server.args(cmd_args);
             }
-            let mut merged_env = merge_agent_env(env, runtime_env);
+            let mut merged_env = merge_agent_env(env, runtime_env, scratch);
+            // codeg launches the binary by absolute path, so this is not about
+            // finding it — it is about the agent finding ITSELF. An agent that
+            // re-execs its own CLI for a subtask looks it up on PATH, and a
+            // desktop launch never inherits the shell rc line the vendor's
+            // installer appended.
+            prepend_agent_install_dirs_path(&mut merged_env, agent_type);
             if agent_type == AgentType::Cursor {
                 apply_cursor_env_policy(&mut merged_env, runtime_env);
             } else if agent_type == AgentType::Grok {
@@ -2009,7 +2076,7 @@ async fn build_agent(
             system_cmd,
             ..
         } => {
-            let merged_env = merge_agent_env(env, runtime_env);
+            let merged_env = merge_agent_env(env, runtime_env, scratch);
             let mut parts: Vec<String> = Vec::new();
             for (k, v) in &merged_env {
                 parts.push(format!("{k}={v}"));
@@ -2174,8 +2241,33 @@ pub async fn spawn_agent_connection(
     // turn is diagnosed as silently empty. Created here so both the spawn side
     // and the conversation loop share the same buffer.
     let stderr_tail = Arc::new(StderrTail::new());
-    let agent = build_agent(agent_type, &runtime_env, &launch_cwd, &stderr_tail)
-        .await?
+    // Per-launch temp directory, created BEFORE the spawn because it has to
+    // exist by the time the child looks: a self-extracting agent binary creates
+    // only its own leaf under whatever `TMP` names, so pointing at a directory
+    // that is not there yet is a failed launch rather than a graceful fallback.
+    // `None` (isolation off, or the directory could not be created) means the
+    // child inherits the ambient temp dir exactly as it did before.
+    let scratch = crate::acp::scratch_dir::create();
+    let agent = match build_agent(
+        agent_type,
+        &runtime_env,
+        &launch_cwd,
+        &stderr_tail,
+        scratch.as_ref().map(|s| s.path()),
+    )
+    .await
+    {
+        Ok(agent) => agent,
+        Err(e) => {
+            // No process was spawned, so nothing will ever fire `on_exit` for
+            // it. Hand the directory back here or it waits for a sweep.
+            if let Some(scratch) = scratch {
+                scratch.release();
+            }
+            return Err(e);
+        }
+    };
+    let agent = agent
         .on_spawn({
             let child_pid = Arc::clone(&child_pid);
             move |pid| child_pid.store(pid, std::sync::atomic::Ordering::SeqCst)
@@ -2186,9 +2278,30 @@ pub async fn spawn_agent_connection(
         // connection that merely ended keeps its pid published, because the
         // vendored `ChildGuard` signals the tree without waiting and the agent
         // may still be running.
+        //
+        // That "only on a real reap" is also why the scratch directory is
+        // released HERE and not from `ConnectionCleanupGuard`: the guard drops
+        // when the driver thread unwinds, which can be well before the agent is
+        // actually gone. Even so a reaped parent does not prove its descendants
+        // let go of the extracted files, so `release` retries on a ladder rather
+        // than deleting once and hoping.
+        //
+        // If this callback is instead DROPPED without ever firing — a
+        // connection that never reported a reap — `LaunchScratch`'s own `Drop`
+        // performs the same cleanup and logs that it had to. Nothing here is
+        // the last line of defence.
         .on_exit({
             let child_pid = Arc::clone(&child_pid);
-            move || child_pid.store(0, std::sync::atomic::Ordering::SeqCst)
+            // `on_exit` is `Fn`, so the one-shot move needs interior mutability.
+            let scratch = std::sync::Mutex::new(scratch);
+            move || {
+                child_pid.store(0, std::sync::atomic::Ordering::SeqCst);
+                if let Ok(mut held) = scratch.lock() {
+                    if let Some(scratch) = held.take() {
+                        scratch.release();
+                    }
+                }
+            }
         });
 
     // Path policy for the ACP `fs/*` channel. Built HERE rather than inside
@@ -2876,7 +2989,38 @@ fn map_session_config_select_group(
     }
 }
 
+/// The `recommendedValue` an agent attached to ONE config option, out of its
+/// `_meta.jetbrains.air` envelope.
+///
+/// Envelope validation mirrors [`air_session_failure`] (integer `version >= 1`,
+/// the same check the adapters run on codeg's own advertisement), so a
+/// future-incompatible envelope yields `None` rather than a half-understood
+/// hint. The payload must be a non-blank string: codex-acp only ever writes a
+/// model id or a reasoning-effort id there, and anything else is not something
+/// a select's values could match.
+///
+/// Deliberately NOT validated against the option's own value list. The frontend
+/// marks the recommendation by equality, so a stale or unknown value marks
+/// nothing — re-deriving the membership rule here would only duplicate the
+/// adapter's own filter and could reject a shape (e.g. a grouped select) it
+/// grows later.
+fn air_recommended_value(
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<String> {
+    let air = meta?.get("jetbrains")?.get("air")?;
+    let version = air.get("version").and_then(serde_json::Value::as_i64)?;
+    if version < 1 {
+        return None;
+    }
+    let value = air
+        .get("recommendedValue")
+        .and_then(serde_json::Value::as_str)?
+        .trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
 fn map_session_config_option(option: &SessionConfigOption) -> Option<SessionConfigOptionInfo> {
+    let recommended_value = air_recommended_value(option.meta.as_ref());
     match &option.kind {
         SessionConfigKind::Select(select) => {
             let (flat_options, groups) = match &select.options {
@@ -2912,8 +3056,12 @@ fn map_session_config_option(option: &SessionConfigOption) -> Option<SessionConf
                     options: flat_options,
                     groups,
                 }),
+                recommended_value,
             })
         }
+        // A toggle has no value list to recommend INTO — its two states are
+        // already spelled out by `current_value` — so the hint is dropped here
+        // rather than carried to a frontend with nowhere to put it.
         SessionConfigKind::Boolean(toggle) => Some(SessionConfigOptionInfo {
             id: option.id.to_string(),
             name: option.name.clone(),
@@ -2922,6 +3070,7 @@ fn map_session_config_option(option: &SessionConfigOption) -> Option<SessionConf
             kind: SessionConfigKindInfo::Boolean(SessionConfigBooleanInfo {
                 current_value: toggle.current_value,
             }),
+            recommended_value: None,
         }),
         _ => None,
     }
@@ -3193,6 +3342,9 @@ fn build_grok_effort_option(
             options,
             groups: Vec::new(),
         }),
+        // Grok's per-model default IS `current_value` here, so a recommendation
+        // would only repeat the checkmark.
+        recommended_value: None,
     })
 }
 
@@ -3289,6 +3441,8 @@ fn synthesize_grok_config_options(
                 options: model_opts,
                 groups: Vec::new(),
             }),
+            // `x.ai/sessionConfig` names no default beyond `selected`.
+            recommended_value: None,
         });
     }
     // Effort selector. With per-model `specs` (parsed from the response's
@@ -3316,6 +3470,7 @@ fn synthesize_grok_config_options(
                 options: effort_opts,
                 groups: Vec::new(),
             }),
+            recommended_value: None,
         });
     }
     if result.is_empty() {
@@ -4112,13 +4267,36 @@ fn build_client_capabilities(
     // ships". Revisit when the draft lands and the announcement carries enough
     // to rebuild the capsule — a parent tool-use id, or the child tool calls
     // arriving with one codeg has seen.
+    //
+    // codex-acp 1.11.0 adds a FOURTH, "recommendedValue", and codeg takes it —
+    // for Codex alone, because claude-agent-acp 0.75.1 does not know the string
+    // (`dist/air-extension.d.ts` exports exactly the three names above) and the
+    // convention here is to advertise nothing an agent hasn't implemented.
+    // With it, `session/new`'s `model` and `reasoning_effort` options each gain
+    // `_meta.jetbrains.air = {version: 1, recommendedValue: <value id>}` — the
+    // model codex marks `isDefault`, and the CURRENT model's
+    // `defaultReasoningEffort`. Read by [`air_recommended_value`] and rendered
+    // as a "recommended" marker beside the matching row.
+    //
+    // It is inert without the advertisement (three live runs against 1.11.0 and
+    // 1.10.0 over stdio: WITH it both options carry the block; WITHOUT it every
+    // option's `_meta` is `null`, byte-identical to 1.10.0), and purely additive
+    // with it — `currentValue` is untouched, so nothing about what is SELECTED
+    // changes. That matters most where codeg's own persisted per-agent
+    // preference pins an option: a user who once pinned `reasoning_effort: max`
+    // otherwise has no signal that the model they just switched to defaults
+    // somewhere else.
     if matches!(agent_type, AgentType::ClaudeCode | AgentType::Codex) {
+        let mut capabilities = vec!["sessionFailure", "asyncTasks"];
+        if agent_type == AgentType::Codex {
+            capabilities.push("recommendedValue");
+        }
         meta.insert(
             "jetbrains".to_string(),
             serde_json::json!({
                 "air": {
                     "version": 1,
-                    "capabilities": ["sessionFailure", "asyncTasks"],
+                    "capabilities": capabilities,
                 }
             }),
         );
@@ -6989,6 +7167,8 @@ fn config_option_rejection(
         option_name: option.name.clone(),
         requested: label(requested),
         actual: label(&select.current_value),
+        requested_value: requested.to_string(),
+        actual_value: select.current_value.clone(),
     })
 }
 
@@ -14936,6 +15116,12 @@ mod tests {
             // agent's background work is still alive, and the only one that can
             // stop it.
             //
+            // "recommendedValue" (codex-acp 1.11.0) is wanted too, but ONLY
+            // from codex: claude-agent-acp 0.75.1 does not know the string
+            // (`dist/air-extension.d.ts` exports exactly the three names this
+            // test talks about), and advertising a capability an agent has not
+            // implemented is how a future meaning gets claimed by accident.
+            //
             // The other two stay out. "agentFileChangeReport"
             // (claude-agent-acp 0.69.0 / codex-acp 1.4.0) buys an extra model
             // round-trip per turn for a clamped, self-reported subset of what
@@ -14945,8 +15131,11 @@ mod tests {
             // rendering around, replacing it with an announcement that carries
             // no parent tool-use id to rebuild it from. See the reasoning at
             // the advertisement site before relaxing this.
-            let expected: Vec<serde_json::Value> =
+            let mut expected: Vec<serde_json::Value> =
                 vec!["sessionFailure".into(), "asyncTasks".into()];
+            if agent == AgentType::Codex {
+                expected.push("recommendedValue".into());
+            }
             assert_eq!(
                 capabilities, &expected,
                 "{agent:?} advertises an unexpected AIR capability set"
@@ -18268,6 +18457,7 @@ mod tests {
                 options: Vec::new(),
                 groups: Vec::new(),
             }),
+            recommended_value: None,
         };
 
         // The model comes from the `model` selector, not from whichever
@@ -18308,6 +18498,7 @@ mod tests {
                     options: Vec::new(),
                     groups: Vec::new(),
                 }),
+                recommended_value: None,
             },
             SessionConfigOptionInfo {
                 id: "auto_approve".to_string(),
@@ -18317,6 +18508,7 @@ mod tests {
                 kind: SessionConfigKindInfo::Boolean(SessionConfigBooleanInfo {
                     current_value: true,
                 }),
+                recommended_value: None,
             },
         ];
 
@@ -18351,6 +18543,97 @@ mod tests {
         }
 
         assert!(current_config_option_values(&[]).is_empty());
+    }
+
+    /// codex-acp 1.11.0's `recommendedValue` has to survive the trip from the
+    /// wire to `SessionConfigOptionInfo`, and a malformed envelope has to be
+    /// dropped rather than half-read. The JSON below is the SHAPE captured off a
+    /// live 1.11.0 `session/new` with the capability advertised — verbatim
+    /// `_meta`, one option trimmed to two values.
+    #[test]
+    fn a_select_carries_the_agents_recommended_value_only_from_a_valid_air_envelope() {
+        let option = |meta: Option<serde_json::Value>| -> SessionConfigOption {
+            let mut raw = serde_json::json!({
+                "id": "model",
+                "name": "Model",
+                "category": "model",
+                "type": "select",
+                "currentValue": "gpt-5.5",
+                "options": [
+                    {"value": "gpt-6-astra", "name": "6 Astra"},
+                    {"value": "gpt-5.5", "name": "5.5"},
+                ],
+            });
+            if let Some(meta) = meta {
+                raw["_meta"] = meta;
+            }
+            serde_json::from_value(raw).expect("config option fixture")
+        };
+        let recommended = |meta: Option<serde_json::Value>| -> Option<String> {
+            map_session_config_option(&option(meta))
+                .expect("a select always maps")
+                .recommended_value
+        };
+
+        // The real envelope. Note it names a value OTHER than `currentValue` —
+        // that is the whole point: "recommended" and "selected" are different
+        // claims, and the hint must not be collapsed into the selection.
+        assert_eq!(
+            recommended(Some(serde_json::json!({
+                "jetbrains": {"air": {"version": 1, "recommendedValue": "gpt-6-astra"}}
+            }))),
+            Some("gpt-6-astra".to_string())
+        );
+
+        // Everything malformed reads as "no recommendation", never as a
+        // half-understood one.
+        for bad in [
+            // No `_meta` at all — every agent but codex 1.11.0+, and codex
+            // itself without the advertisement.
+            None,
+            // Version missing / below the floor / not an integer: the same
+            // gate `air_session_failure` applies, mirroring what the adapters
+            // run on codeg's own advertisement.
+            Some(serde_json::json!({
+                "jetbrains": {"air": {"recommendedValue": "gpt-6-astra"}}
+            })),
+            Some(serde_json::json!({
+                "jetbrains": {"air": {"version": 0, "recommendedValue": "gpt-6-astra"}}
+            })),
+            Some(serde_json::json!({
+                "jetbrains": {"air": {"version": "1", "recommendedValue": "gpt-6-astra"}}
+            })),
+            // Right key, wrong envelope (no `air` wrapper).
+            Some(serde_json::json!({
+                "jetbrains": {"recommendedValue": "gpt-6-astra"}
+            })),
+            // Non-string and blank payloads: nothing a select's values match.
+            Some(serde_json::json!({
+                "jetbrains": {"air": {"version": 1, "recommendedValue": ["gpt-6-astra"]}}
+            })),
+            Some(serde_json::json!({
+                "jetbrains": {"air": {"version": 1, "recommendedValue": "   "}}
+            })),
+        ] {
+            assert_eq!(recommended(bad.clone()), None, "unexpected read from {bad:?}");
+        }
+
+        // A toggle has no value list to recommend into, so the hint is dropped
+        // even when the envelope is valid.
+        let toggle: SessionConfigOption = serde_json::from_value(serde_json::json!({
+            "id": "auto_approve",
+            "name": "Auto-approve",
+            "type": "boolean",
+            "currentValue": true,
+            "_meta": {"jetbrains": {"air": {"version": 1, "recommendedValue": "true"}}},
+        }))
+        .expect("boolean option fixture");
+        assert_eq!(
+            map_session_config_option(&toggle)
+                .expect("a boolean always maps")
+                .recommended_value,
+            None
+        );
     }
 
     #[test]
@@ -18724,6 +19007,7 @@ mod tests {
                 ],
                 groups: vec![],
             }),
+            recommended_value: None,
         }]
     }
 
@@ -18739,12 +19023,19 @@ mod tests {
                 option_name,
                 requested,
                 actual,
+                requested_value,
+                actual_value,
             } => {
                 assert_eq!(config_id, "thought_level");
                 assert_eq!(option_name, "Thinking");
                 // Labels, not ids: the dropdown showed these strings.
                 assert_eq!(requested, "Thinking: high");
                 assert_eq!(actual, "Thinking: off");
+                // And the raw ids beside them, so a client that localises an
+                // agent's own vocabulary has something stable to key on — the
+                // labels above have already been resolved away from it.
+                assert_eq!(requested_value, "high");
+                assert_eq!(actual_value, "off");
             }
             other => panic!("expected ConfigOptionRejected, got {other:?}"),
         }
@@ -18782,6 +19073,7 @@ mod tests {
             kind: SessionConfigKindInfo::Boolean(SessionConfigBooleanInfo {
                 current_value: false,
             }),
+            recommended_value: None,
         }];
         assert!(config_option_rejection(&toggle, "auto_approve", "true").is_none());
     }
@@ -19013,6 +19305,7 @@ mod tests {
                 ],
                 groups: Vec::new(),
             }),
+            recommended_value: None,
         }]
     }
 
@@ -21061,9 +21354,68 @@ mod tests {
     /// overwrites an inherited value rather than filling in a missing one, so
     /// leaking it into the default path would change what every un-opted-in
     /// launch reports about its terminal.
+    /// The precedence that IS the temp-leak fix.
+    ///
+    /// A self-extracting agent resolves its unpack root from `TMP` before
+    /// `TEMP` (Windows `GetTempPathW`). If a per-agent `env_json` `TMP` were
+    /// allowed to win — which it would under the ordinary `runtime_env`-last
+    /// rule every other variable follows — the extraction would land wherever
+    /// that points while codeg deleted an empty scratch directory and reported
+    /// the leak fixed. The whole fix is this one ordering, so it gets a test.
+    #[test]
+    fn scratch_dir_outranks_a_per_agent_temp_override() {
+        let mut runtime_env = BTreeMap::new();
+        for key in crate::acp::scratch_dir::TEMP_ENV_KEYS {
+            runtime_env.insert(key.to_string(), "/somewhere/the/user/picked".to_string());
+        }
+        let scratch = Path::new("/scratch/codeg-acp/123-deadbeef");
+
+        let merged = merge_agent_env_with_color(false, &[], &runtime_env, Some(scratch));
+
+        for key in crate::acp::scratch_dir::TEMP_ENV_KEYS {
+            assert_eq!(
+                merged_value(&merged, key),
+                Some("/scratch/codeg-acp/123-deadbeef"),
+                "{key} must point at the scratch dir, not the per-agent override"
+            );
+        }
+    }
+
+    /// All three names, every time. Setting only `TMPDIR` would leave `TMP`
+    /// inherited from codeg's own environment, and `GetTempPathW` reads `TMP`
+    /// first.
+    #[test]
+    fn scratch_dir_sets_every_temp_variable_the_child_might_read() {
+        let merged = merge_agent_env_with_color(
+            false,
+            &[],
+            &BTreeMap::new(),
+            Some(Path::new("/scratch/x")),
+        );
+        for key in crate::acp::scratch_dir::TEMP_ENV_KEYS {
+            assert_eq!(merged_value(&merged, key), Some("/scratch/x"), "{key}");
+        }
+    }
+
+    /// No scratch dir (isolation off, or the directory could not be created)
+    /// must leave the environment exactly as it was — the child then inherits
+    /// the ambient temp dir, which is the pre-fix behaviour and a working
+    /// launch.
+    #[test]
+    fn without_a_scratch_dir_the_temp_variables_are_untouched() {
+        let mut runtime_env = BTreeMap::new();
+        runtime_env.insert("TMP".to_string(), "/user/choice".to_string());
+
+        let merged = merge_agent_env_with_color(false, &[], &runtime_env, None);
+
+        assert_eq!(merged_value(&merged, "TMP"), Some("/user/choice"));
+        assert_eq!(merged_value(&merged, "TEMP"), None);
+        assert_eq!(merged_value(&merged, "TMPDIR"), None);
+    }
+
     #[test]
     fn merge_agent_env_omits_the_color_env_by_default() {
-        let merged = merge_agent_env_with_color(false, &[], &BTreeMap::new());
+        let merged = merge_agent_env_with_color(false, &[], &BTreeMap::new(), None);
         for key in ["CLICOLOR", "CLICOLOR_FORCE", "FORCE_COLOR", "TERM"] {
             assert_eq!(merged_value(&merged, key), None, "{key} must not be set");
         }
@@ -21080,7 +21432,7 @@ mod tests {
     /// this setting exists to fix.
     #[test]
     fn merge_agent_env_injects_the_whole_color_env_when_opted_in() {
-        let merged = merge_agent_env_with_color(true, &[], &BTreeMap::new());
+        let merged = merge_agent_env_with_color(true, &[], &BTreeMap::new(), None);
         assert_eq!(merged_value(&merged, "CLICOLOR"), Some("1"));
         assert_eq!(merged_value(&merged, "CLICOLOR_FORCE"), Some("1"));
         assert_eq!(merged_value(&merged, "FORCE_COLOR"), Some("1"));
@@ -21104,7 +21456,7 @@ mod tests {
             ("FORCE_COLOR".to_string(), "0".to_string()),
             ("TERM".to_string(), "dumb".to_string()),
         ]);
-        let merged = merge_agent_env_with_color(true, &[], &runtime_env);
+        let merged = merge_agent_env_with_color(true, &[], &runtime_env, None);
         assert_eq!(merged_value(&merged, "CLICOLOR"), Some(""));
         assert_eq!(merged_value(&merged, "CLICOLOR_FORCE"), Some(""));
         assert_eq!(merged_value(&merged, "FORCE_COLOR"), Some("0"));
@@ -21117,7 +21469,7 @@ mod tests {
     fn merge_agent_env_without_color_keeps_other_layers() {
         let runtime_env = BTreeMap::from([("FROM_ROW".to_string(), "row".to_string())]);
         let merged =
-            merge_agent_env_with_color(false, &[("FROM_REGISTRY", "registry")], &runtime_env);
+            merge_agent_env_with_color(false, &[("FROM_REGISTRY", "registry")], &runtime_env, None);
         assert_eq!(merged_value(&merged, "FROM_REGISTRY"), Some("registry"));
         assert_eq!(merged_value(&merged, "FROM_ROW"), Some("row"));
     }
